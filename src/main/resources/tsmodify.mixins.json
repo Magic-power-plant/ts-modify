@@ -5,6 +5,7 @@
   "compatibilityLevel": "JAVA_17",
   "refmap": "tsmodify.refmap.json",
   "mixins": [
+    "RecipeJSMixin",
     "ScriptFileInfoMixin"
   ],
   "client": [
