@@ -8,30 +8,23 @@ KubeJS stores user scripts under the game directory:
 - `kubejs/server_scripts`
 - `kubejs/client_scripts`
 
-In KubeJS `2001.6.5-build.14`, `KubeJS.loadScripts` and `ScriptManager.loadFromResources` already discover both `.js` and `.ts` files, while ignoring `.d.ts`. The missing piece is execution: KubeJS passes script text directly to Rhino, so TypeScript-only syntax still causes runtime syntax errors.
+In KubeJS `2001.6.5-build.14`, `KubeJS.loadScripts` and `ScriptManager.loadFromResources` already discover both `.js` and `.ts` files, while ignoring `.d.ts`. The missing piece is execution: KubeJS passes script text directly to Rhino, so TypeScript syntax must be emitted as JavaScript before runtime evaluation.
 
-## What TS Modify Adds
+## Runtime Transpilation
 
-TS Modify injects into `ScriptFileInfo.preload()` and rewrites `.ts` source before KubeJS evaluates it. Normal KubeJS behavior is preserved for `.js` files and `.d.ts` files stay ignored by KubeJS.
+TS Modify injects into `ScriptFileInfo.preload()` and rewrites TypeScript source before KubeJS evaluates it. Normal KubeJS behavior is preserved for `.js` files, and declaration files stay ignored.
 
-Each `.ts` file also gets isolated top-level names. KubeJS event callbacks are invoked later by KubeJS, so TS Modify avoids function-wrapper isolation and instead rewrites top-level declarations to file-unique names. KubeJS global bindings such as `ServerEvents`, `ItemEvents`, and `StartupEvents` remain visible, callbacks can still reference file-local helpers, and top-level declarations inside one TypeScript file no longer collide with other KubeJS script files.
+The main transpilation path is backed by `swc4j`, using SWC's TypeScript parser and emitter instead of the old hand-written TypeScript stripper. Runtime mode supports the TypeScript-family script extensions `.ts`, `.tsx`, `.mts`, and `.cts`, excluding declaration files.
 
-The lightweight transpiler removes common TypeScript syntax that Rhino cannot parse:
+KubeJS runtime mode also applies KubeJS-specific compatibility steps after SWC emits JavaScript:
 
-- `interface`, `type`, and `declare` declarations
-- variable, parameter, property, and return type annotations
-- generic parameters on functions/classes and simple generic calls
-- `as` and `satisfies` casts
-- non-null assertions
-- simple optional function calls such as `global.foo?.(value)`
-- `export` statements
-- basic `enum` declarations, converted to frozen JavaScript objects
+- static `import` and `export` declarations are stripped because KubeJS script folders are not loaded as an ES module graph
+- top-level declarations are renamed to file-unique names so helpers from separate script files do not collide
+- selected JavaScript syntax that Rhino commonly rejects, such as arrow functions and optional calls, is lowered for runtime compatibility
 
-Top-level assignments to explicit global objects, such as KubeJS `global`, are still shared intentionally. Undeclared assignments also follow normal JavaScript behavior, so prefer `let`, `const`, `var`, `function`, or `class` for file-local state.
+KubeJS global bindings such as `ServerEvents`, `ItemEvents`, `StartupEvents`, and explicit assignments to shared objects such as `global` remain visible. Undeclared assignments also follow normal JavaScript behavior, so prefer `let`, `const`, `var`, `function`, or `class` for file-local state.
 
 ## Supported Script Style
-
-Good fit:
 
 ```ts
 export {}
@@ -52,25 +45,31 @@ function addRecipe(event: RecipeEvent): void {
 ServerEvents.recipes(event => addRecipe(event))
 ```
 
-## IDE Duplicate Declaration Warnings
+The `export {}` marker is useful for IDEs because it makes each TypeScript file a module for type-analysis purposes. TS Modify removes that marker before Rhino evaluates the script.
 
-TypeScript treats files without any `import` or `export` as global script files. If multiple KubeJS `.ts` files all declare helpers such as `const g = global as any`, the IDE may report duplicate variable declarations even though TS Modify isolates them at runtime.
+## Project Transpilation
 
-Add an empty export to each `.ts` file:
+For project-level TypeScript output, use `TypeScriptProjectTranspiler` instead of the KubeJS runtime mode. It recursively reads a source root, writes JavaScript into a separate output root, rewrites relative TypeScript module specifiers, maps output extensions, and copies non-TypeScript files.
 
-```ts
-export {}
+Extension mapping:
 
-const g = global as any
+- `.ts` and `.tsx` -> `.js`
+- `.mts` -> `.mjs`
+- `.cts` -> `.cjs`
+- `.d.ts`, `.d.mts`, and `.d.cts` are skipped
+
+The output root must not be the source root or a child of it. This prevents repeated transpilation of generated output.
+
+The CLI entry point accepts:
+
+```text
+TypeScriptProjectTranspiler <sourceRoot> <outputRoot> [--continue]
 ```
 
-The empty export makes the IDE treat the file as its own module scope. TS Modify strips `export {}` before Rhino evaluates the script, so it is safe for KubeJS runtime.
+Without `--continue`, the first file error fails the run. With `--continue`, the result collects failures and returns a non-zero process exit after processing the rest of the project.
 
-Not a full TypeScript compiler:
+## Scope
 
-- no module bundling
-- no type checking
-- no decorator lowering
-- no advanced TS emit transforms
+SWC handles TypeScript syntax transpilation. TS Modify does not perform type checking or module bundling. Runtime KubeJS mode intentionally strips static module declarations; project mode preserves module syntax and rewrites relative `.ts`-family specifiers to their emitted JavaScript extensions.
 
-For large script projects, run `tsc`, `esbuild`, or another real TypeScript tool before KubeJS loads the output. This mod is meant to make common inline TypeScript syntax work directly in KubeJS script folders.
+The mod packages `swc4j` through Forge Jar-in-Jar. By default, the build only embeds the native artifact for the build machine's current platform, which keeps the mod jar small for local use. Use `-Pswc4jPlatforms=all` to build a cross-platform jar, or pass a comma-separated list such as `-Pswc4jPlatforms=windows-x86_64,linux-x86_64` for a targeted release.

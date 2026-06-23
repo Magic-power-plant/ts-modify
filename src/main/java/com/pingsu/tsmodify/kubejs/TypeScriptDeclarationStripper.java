@@ -80,11 +80,45 @@ final class TypeScriptDeclarationStripper {
                 continue;
             }
 
+            if (cursor < mask.length && mask[cursor] == '*') {
+                int end = findStatementEnd(mask, cursor);
+                blankRange(out, start, end);
+                i = end - 1;
+                continue;
+            }
+
             blankRange(out, start, cursor);
             if (matchesKeyword(mask, cursor, "default")) {
                 int afterDefault = skipWhitespace(mask, cursor + "default".length());
                 blankRange(out, cursor, afterDefault);
             }
+        }
+
+        return out.toString();
+    }
+
+    static String stripImportStatements(String source) {
+        StringBuilder out = new StringBuilder(source);
+        char[] mask = maskCode(source);
+
+        for (int i = 0; i < mask.length; i++) {
+            if (!isStatementBoundaryBefore(mask, i)) {
+                continue;
+            }
+
+            int start = skipWhitespace(mask, i);
+            if (!matchesKeyword(mask, start, "import")) {
+                continue;
+            }
+
+            int cursor = skipWhitespace(mask, start + "import".length());
+            if (cursor < mask.length && (mask[cursor] == '(' || mask[cursor] == '.')) {
+                continue;
+            }
+
+            int end = findStatementEnd(mask, cursor);
+            blankRange(out, start, end);
+            i = end - 1;
         }
 
         return out.toString();
