@@ -72,7 +72,12 @@ mixin {
     config "${mod_id}.mixins.json"
 }
 
-sourceSets.main.resources { srcDir 'src/generated/resources' }
+def generatedSwc4jWasmResourcesDir = layout.buildDirectory.dir('generated/resources/swc4jWasm')
+
+sourceSets.main.resources {
+    srcDir 'src/generated/resources'
+    srcDir generatedSwc4jWasmResourcesDir
+}
 
 repositories {
     mavenCentral()
@@ -98,44 +103,15 @@ repositories {
     }
 }
 
-def swc4jVersion = '2.1.0'
-def swc4jNativeArtifacts = [
-        'linux-arm64'    : 'swc4j-linux-arm64',
-        'linux-x86_64'   : 'swc4j-linux-x86_64',
-        'macos-arm64'    : 'swc4j-macos-arm64',
-        'macos-x86_64'   : 'swc4j-macos-x86_64',
-        'windows-arm64'  : 'swc4j-windows-arm64',
-        'windows-x86_64' : 'swc4j-windows-x86_64',
-]
-
-def detectSwc4jPlatform = {
-    def osName = System.getProperty('os.name').toLowerCase(Locale.ROOT)
-    def archName = System.getProperty('os.arch').toLowerCase(Locale.ROOT)
-    def arch = ['aarch64', 'arm64'].contains(archName) ? 'arm64' : 'x86_64'
-
-    if (osName.contains('win')) {
-        return "windows-${arch}"
-    }
-    if (osName.contains('mac') || osName.contains('darwin')) {
-        return "macos-${arch}"
-    }
-    if (osName.contains('linux')) {
-        return "linux-${arch}"
-    }
-    throw new GradleException("Unsupported swc4j platform for os.name='${osName}', os.arch='${archName}'. Set -Pswc4jPlatforms explicitly.")
-}
-
-def swc4jPlatformsProperty = providers.gradleProperty('swc4jPlatforms').orElse(detectSwc4jPlatform()).get()
-def swc4jPlatforms = swc4jPlatformsProperty == 'all'
-        ? swc4jNativeArtifacts.keySet()
-        : swc4jPlatformsProperty.split(',').collect { it.trim() }.findAll { !it.isEmpty() }
-def swc4jRuntimeArtifacts = ['swc4j'] + swc4jPlatforms.collect { platform ->
-    def artifact = swc4jNativeArtifacts[platform]
-    if (artifact == null) {
-        throw new GradleException("Unknown swc4j platform '${platform}'. Expected one of ${swc4jNativeArtifacts.keySet()} or 'all'.")
-    }
-    artifact
-}
+def chicoryVersion = '1.7.5'
+def swc4jWasmCrateDir = layout.projectDirectory.dir('wasm/swc4j-bridge')
+def swc4jWasmBinary = swc4jWasmCrateDir.file('target/wasm32-wasip1/release/swc4j_bridge.wasm')
+def cargoExecutable = providers.environmentVariable('CARGO')
+        .orElse(providers.environmentVariable('USERPROFILE').map { "${it}\\.cargo\\bin\\cargo.exe" })
+        .orElse('cargo')
+def skipSwc4jWasm = providers.gradleProperty('skipSwc4jWasm')
+        .map { it.toBoolean() }
+        .orElse(false)
 
 dependencies {
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
@@ -146,19 +122,51 @@ dependencies {
     implementation fg.deobf("dev.architectury:architectury-forge:${architectury_version}")
     implementation fg.deobf("curse.maven:probejs-585406:5227399")
 
-    swc4jRuntimeArtifacts.each { artifact ->
-        implementation "com.caoccao.javet:${artifact}:${swc4jVersion}"
-        jarJar "com.caoccao.javet:${artifact}:[${swc4jVersion},${swc4jVersion}]"
-    }
+    implementation "com.dylibso.chicory:runtime:${chicoryVersion}"
+    implementation "com.dylibso.chicory:wasi:${chicoryVersion}"
+    implementation "com.dylibso.chicory:wasm:${chicoryVersion}"
+    implementation "com.dylibso.chicory:log:${chicoryVersion}"
+    jarJar "com.dylibso.chicory:runtime:[${chicoryVersion},${chicoryVersion}]"
+    jarJar "com.dylibso.chicory:wasi:[${chicoryVersion},${chicoryVersion}]"
+    jarJar "com.dylibso.chicory:wasm:[${chicoryVersion},${chicoryVersion}]"
+    jarJar "com.dylibso.chicory:log:[${chicoryVersion},${chicoryVersion}]"
 
     testImplementation platform('org.junit:junit-bom:5.10.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
-jarJar.enable()
+tasks.register('compileSwc4jWasm', Exec) {
+    description = 'Compiles the SWC bridge to WebAssembly for the Java WASM runtime.'
+    group = 'build'
+    onlyIf { !skipSwc4jWasm.get() }
+    workingDir swc4jWasmCrateDir
+    commandLine cargoExecutable.get(), 'build', '--release', '--target', 'wasm32-wasip1'
+    inputs.file swc4jWasmCrateDir.file('Cargo.toml')
+    inputs.files fileTree(swc4jWasmCrateDir.dir('src')) {
+        include '**/*.rs'
+    }
+    outputs.file swc4jWasmBinary
+    doFirst {
+        if (!swc4jWasmCrateDir.asFile.isDirectory()) {
+            throw new GradleException("Missing SWC WASM crate: ${swc4jWasmCrateDir.asFile}")
+        }
+    }
+}
+
+tasks.register('processSwc4jWasmResources', Copy) {
+    description = 'Copies the compiled SWC WebAssembly module into the main mod resources.'
+    group = 'build'
+    onlyIf { !skipSwc4jWasm.get() }
+    dependsOn tasks.named('compileSwc4jWasm')
+    from(swc4jWasmBinary)
+    into generatedSwc4jWasmResourcesDir.map { it.dir('swc4j') }
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+}
 
 tasks.named('processResources', ProcessResources).configure {
+    dependsOn tasks.named('processSwc4jWasmResources')
+
     var replaceProperties = [
             minecraft_version      : minecraft_version,
             minecraft_version_range: minecraft_version_range,
@@ -194,6 +202,8 @@ tasks.named('jar', Jar).configure {
 
     finalizedBy 'reobfJar'
 }
+
+jarJar.enable()
 
 tasks.named('jarJar').configure {
     finalizedBy 'reobfJarJar'

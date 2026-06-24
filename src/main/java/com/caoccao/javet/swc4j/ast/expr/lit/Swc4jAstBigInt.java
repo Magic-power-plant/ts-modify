@@ -1,0 +1,266 @@
+/*
+ * Copyright (c) 2024-2026. caoccao.com Sam Cao
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.caoccao.javet.swc4j.ast.expr.lit;
+
+import com.caoccao.javet.swc4j.ast.Swc4jAst;
+import com.caoccao.javet.swc4j.ast.enums.Swc4jAstBigIntSign;
+import com.caoccao.javet.swc4j.ast.enums.Swc4jAstType;
+import com.caoccao.javet.swc4j.ast.interfaces.*;
+import com.caoccao.javet.swc4j.ast.visitors.ISwc4jAstVisitor;
+import com.caoccao.javet.swc4j.ast.visitors.Swc4jAstVisitorResponse;
+import com.caoccao.javet.swc4j.constants.ISwc4jConstants;
+import com.caoccao.javet.swc4j.jni2rust.*;
+import com.caoccao.javet.swc4j.span.Swc4jSpan;
+import com.caoccao.javet.swc4j.utils.AssertionUtils;
+import com.caoccao.javet.swc4j.utils.StringUtils;
+
+import java.math.BigInteger;
+import java.util.List;
+import java.util.Optional;
+
+/**
+ * The type swc4j ast big int.
+ */
+@Jni2RustClass(filePath = Jni2RustFilePath.AstUtils, customFromJava = true, customToJava = true)
+public class Swc4jAstBigInt
+        extends Swc4jAst
+        implements ISwc4jAstLit, ISwc4jAstPropName, ISwc4jAstTsLit, ISwc4jAstCoercionPrimitive {
+    /**
+     * The Raw.
+     */
+    @Jni2RustField(atom = true)
+    protected Optional<String> raw;
+    /**
+     * The Sign.
+     */
+    @Jni2RustField(ignore = true)
+    protected Swc4jAstBigIntSign sign;
+    /**
+     * The Value.
+     */
+    @Jni2RustField(box = true)
+    protected BigInteger value;
+
+    /**
+     * Instantiates a new swc4j ast big int.
+     *
+     * @param sign the sign
+     * @param raw  the raw
+     * @param span the span
+     */
+    @Jni2RustMethod
+    public Swc4jAstBigInt(
+            Swc4jAstBigIntSign sign,
+            @Jni2RustParam(optional = true) String raw,
+            Swc4jSpan span) {
+        super(span);
+        setRaw(raw);
+        setSign(sign);
+    }
+
+    /**
+     * Create swc4j ast big int.
+     *
+     * @return the swc4j ast big int
+     */
+    public static Swc4jAstBigInt create() {
+        return create(Swc4jAstBigIntSign.NoSign, null);
+    }
+
+    /**
+     * Create swc4j ast big int.
+     *
+     * @param raw the raw
+     * @return the swc4j ast big int
+     */
+    public static Swc4jAstBigInt create(String raw) {
+        return create(Swc4jAstBigIntSign.Plus, raw);
+    }
+
+    /**
+     * Create swc4j ast big int.
+     *
+     * @param sign the sign
+     * @param raw  the raw
+     * @return the swc4j ast big int
+     */
+    public static Swc4jAstBigInt create(Swc4jAstBigIntSign sign, String raw) {
+        return new Swc4jAstBigInt(sign, raw, Swc4jSpan.DUMMY);
+    }
+
+    @Override
+    public boolean asBoolean() {
+        return !BigInteger.ZERO.equals(value);
+    }
+
+    @Override
+    public byte asByte() {
+        return value.byteValue();
+    }
+
+    @Override
+    public double asDouble() {
+        return value.doubleValue();
+    }
+
+    @Override
+    public float asFloat() {
+        return value.floatValue();
+    }
+
+    @Override
+    public int asInt() {
+        return value.intValue();
+    }
+
+    @Override
+    public long asLong() {
+        return value.longValue();
+    }
+
+    @Override
+    public short asShort() {
+        return value.shortValue();
+    }
+
+    @Override
+    public String asString() {
+        return toString();
+    }
+
+    @Override
+    public List<ISwc4jAst> getChildNodes() {
+        return EMPTY_CHILD_NODES;
+    }
+
+    /**
+     * Gets raw.
+     *
+     * @return the raw
+     */
+    @Jni2RustMethod
+    public Optional<String> getRaw() {
+        return raw;
+    }
+
+    /**
+     * Gets sign.
+     *
+     * @return the sign
+     */
+    @Jni2RustMethod
+    public Swc4jAstBigIntSign getSign() {
+        return sign;
+    }
+
+    @Override
+    public Swc4jAstType getType() {
+        return Swc4jAstType.BigInt;
+    }
+
+    /**
+     * Gets value.
+     *
+     * @return the value
+     */
+    @Jni2RustMethod
+    public BigInteger getValue() {
+        return value;
+    }
+
+    @Override
+    public boolean replaceNode(ISwc4jAst oldNode, ISwc4jAst newNode) {
+        return false;
+    }
+
+    /**
+     * Sets raw.
+     *
+     * @param raw the raw
+     * @return the raw
+     */
+    public Swc4jAstBigInt setRaw(String raw) {
+        this.raw = Optional.ofNullable(raw);
+        if (StringUtils.isEmpty(raw)) {
+            value = BigInteger.ZERO;
+        } else {
+            // Remove the trailing 'n' suffix
+            String numStr = raw.substring(0, raw.length() - ISwc4jConstants.N.length());
+
+            // Remove underscores if present (numeric separators)
+            numStr = numStr.replace("_", "");
+
+            // Parse based on prefix
+            if (numStr.startsWith("0x") || numStr.startsWith("0X")) {
+                // Hexadecimal format: 0xFFn
+                value = new BigInteger(numStr.substring(2), 16);
+            } else if (numStr.startsWith("0o") || numStr.startsWith("0O")) {
+                // Octal format: 0o77n
+                value = new BigInteger(numStr.substring(2), 8);
+            } else if (numStr.startsWith("0b") || numStr.startsWith("0B")) {
+                // Binary format: 0b1111n
+                value = new BigInteger(numStr.substring(2), 2);
+            } else {
+                // Decimal format (default)
+                value = new BigInteger(numStr);
+            }
+        }
+        return this;
+    }
+
+    /**
+     * Sets sign.
+     *
+     * @param sign the sign
+     * @return the sign
+     */
+    public Swc4jAstBigInt setSign(Swc4jAstBigIntSign sign) {
+        this.sign = AssertionUtils.notNull(sign, "Sign");
+        return this;
+    }
+
+    /**
+     * Sets value.
+     *
+     * @param value the value
+     * @return the value
+     */
+    public Swc4jAstBigInt setValue(BigInteger value) {
+        this.value = AssertionUtils.notNull(value, "Value");
+        raw = Optional.of(value.toString() + ISwc4jConstants.N);
+        return this;
+    }
+
+    @Override
+    public String toString() {
+        return raw.orElseGet(() -> {
+            String signString = sign == Swc4jAstBigIntSign.Minus
+                    ? Swc4jAstBigIntSign.Minus.getName()
+                    : Swc4jAstBigIntSign.NoSign.getName();
+            return signString + value;
+        });
+    }
+
+    @Override
+    public Swc4jAstVisitorResponse visit(ISwc4jAstVisitor visitor) {
+        return switch (visitor.visitBigInt(this)) {
+            case Error -> Swc4jAstVisitorResponse.Error;
+            case OkAndBreak -> Swc4jAstVisitorResponse.OkAndContinue;
+            default -> super.visit(visitor);
+        };
+    }
+}

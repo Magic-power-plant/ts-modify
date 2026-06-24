@@ -20,7 +20,7 @@ KubeJS runtime mode also applies KubeJS-specific compatibility steps after SWC e
 
 - static `import` and `export` declarations are stripped because KubeJS script folders are not loaded as an ES module graph
 - top-level declarations are renamed to file-unique names so helpers from separate script files do not collide
-- selected JavaScript syntax that Rhino commonly rejects, such as arrow functions and optional calls, is lowered for runtime compatibility
+- output targets ES2015 / ES6 for KubeJS; newer syntax such as optional chaining is lowered, while ES6 syntax such as arrow functions and `const` / `let` is preserved
 
 KubeJS global bindings such as `ServerEvents`, `ItemEvents`, `StartupEvents`, and explicit assignments to shared objects such as `global` remain visible. Undeclared assignments also follow normal JavaScript behavior, so prefer `let`, `const`, `var`, `function`, or `class` for file-local state.
 
@@ -49,7 +49,7 @@ The `export {}` marker is useful for IDEs because it makes each TypeScript file 
 
 ## Project Transpilation
 
-For project-level TypeScript output, use `TypeScriptProjectTranspiler` instead of the KubeJS runtime mode. It recursively reads a source root, writes JavaScript into a separate output root, rewrites relative TypeScript module specifiers, maps output extensions, and copies non-TypeScript files.
+For project-level TypeScript output, use `com.pingsu.tsmodify.typescript.project.TypeScriptProjectTranspiler` instead of the KubeJS runtime mode. It recursively reads a source root, writes JavaScript into a separate output root, rewrites relative TypeScript module specifiers, maps output extensions, and copies non-TypeScript files.
 
 Extension mapping:
 
@@ -72,4 +72,6 @@ Without `--continue`, the first file error fails the run. With `--continue`, the
 
 SWC handles TypeScript syntax transpilation. TS Modify does not perform type checking or module bundling. Runtime KubeJS mode intentionally strips static module declarations; project mode preserves module syntax and rewrites relative `.ts`-family specifiers to their emitted JavaScript extensions.
 
-The mod packages `swc4j` through Forge Jar-in-Jar. By default, the build only embeds the native artifact for the build machine's current platform, which keeps the mod jar small for local use. Use `-Pswc4jPlatforms=all` to build a cross-platform jar, or pass a comma-separated list such as `-Pswc4jPlatforms=windows-x86_64,linux-x86_64` for a targeted release.
+The mod vendors the swc4j Java API subset that TS Modify uses, but the SWC execution path no longer loads swc4j JNI libraries. The build compiles the local `wasm/swc4j-bridge` Rust crate to `wasm32-wasip1`, packages `swc4j/swc4j_bridge.wasm` as a mod resource, and calls it through the pure Java Chicory WebAssembly runtime.
+
+`compileSwc4jWasm` requires Cargo and the `wasm32-wasip1` target. `processResources` depends on that task so release jars contain the WASM module and no `libswc4j-*` platform native resources. Use `-PskipSwc4jWasm=true` only for Java-only compilation on machines without Rust; that path does not produce a runnable SWC WASM resource.

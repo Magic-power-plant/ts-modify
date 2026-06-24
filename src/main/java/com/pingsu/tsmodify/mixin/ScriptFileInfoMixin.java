@@ -1,6 +1,6 @@
 package com.pingsu.tsmodify.mixin;
 
-import com.pingsu.tsmodify.kubejs.TypeScriptTranspiler;
+import com.pingsu.tsmodify.typescript.TypeScriptTranspiler;
 import dev.latvian.mods.kubejs.script.ScriptFileInfo;
 import dev.latvian.mods.kubejs.script.ScriptSource;
 import org.spongepowered.asm.mixin.Final;
