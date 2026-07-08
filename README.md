@@ -24,8 +24,10 @@ TS Modify 解决的是这个运行时兼容问题：让整合包或脚本开发�
 
 针对 KubeJS 运行环境，转译后还会执行以下兼容处理：
 
-- 移除静态 `import` / `export` 声明，因为 KubeJS 脚本目录不是 ES module graph；
-- 将顶层声明重命名为文件唯一名称，减少不同脚本文件之间的辅助变量和函数名冲突；
+- 将静态 `import` / `export` 转换为 TS Modify 的运行时模块加载器调用；
+- 为每个 `.ts` 文件建立独立模块作用域，减少不同脚本文件之间的辅助变量和函数名冲突；
+- 在同一脚本域内支持相对路径模块引用，例如 `server_scripts` 内 import `server_scripts` 内的文件；
+- 支持 `kubejs/shared_scripts` 作为 server/client 都可读取的共享源码目录，模块会在各自脚本上下文中分别执行和缓存；
 - 输出目标为 ES2015，并降低部分 Rhino 不兼容的新语法，例如可选链；
 - 在链式调用后接 TypeScript 类型断言的场景中补充分号保护，避免转译前后语义被错误拼接。
 

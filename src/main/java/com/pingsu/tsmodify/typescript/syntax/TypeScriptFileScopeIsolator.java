@@ -6,6 +6,7 @@ import static com.pingsu.tsmodify.typescript.syntax.TypeScriptSourceScanner.mask
 import static com.pingsu.tsmodify.typescript.syntax.TypeScriptSourceScanner.matchesKeyword;
 import static com.pingsu.tsmodify.typescript.syntax.TypeScriptSourceScanner.nextNonWhitespace;
 import static com.pingsu.tsmodify.typescript.syntax.TypeScriptSourceScanner.previousNonWhitespace;
+import static com.pingsu.tsmodify.typescript.syntax.TypeScriptSourceScanner.previousStatementBoundary;
 import static com.pingsu.tsmodify.typescript.syntax.TypeScriptSourceScanner.readIdentifier;
 import static com.pingsu.tsmodify.typescript.syntax.TypeScriptSourceScanner.skipWhitespace;
 
@@ -61,12 +62,21 @@ public final class TypeScriptFileScopeIsolator {
             }
 
             if (matchesKeyword(mask, i, "var") || matchesKeyword(mask, i, "let") || matchesKeyword(mask, i, "const")) {
+                if (hasExportModifier(mask, i)) {
+                    continue;
+                }
                 i = collectVariableRenames(fileName, mask, renames, i);
             } else if (matchesKeyword(mask, i, "function")) {
+                if (hasExportModifier(mask, i)) {
+                    continue;
+                }
                 int nameStart = skipWhitespace(mask, i + "function".length());
                 int nameEnd = readIdentifier(mask, nameStart);
                 addRename(fileName, renames, mask, nameStart, nameEnd);
             } else if (matchesKeyword(mask, i, "class")) {
+                if (hasExportModifier(mask, i)) {
+                    continue;
+                }
                 int nameStart = skipWhitespace(mask, i + "class".length());
                 int nameEnd = readIdentifier(mask, nameStart);
                 addRename(fileName, renames, mask, nameStart, nameEnd);
@@ -74,6 +84,22 @@ public final class TypeScriptFileScopeIsolator {
         }
 
         return renames;
+    }
+
+    private static boolean hasExportModifier(char[] mask, int declarationKeywordStart) {
+        int statementStart = skipWhitespace(mask, previousStatementBoundary(mask, declarationKeywordStart));
+        if (!matchesKeyword(mask, statementStart, "export")) {
+            return false;
+        }
+
+        int cursor = skipWhitespace(mask, statementStart + "export".length());
+        if (matchesKeyword(mask, cursor, "default")) {
+            cursor = skipWhitespace(mask, cursor + "default".length());
+        }
+        if (matchesKeyword(mask, cursor, "async")) {
+            cursor = skipWhitespace(mask, cursor + "async".length());
+        }
+        return cursor == declarationKeywordStart;
     }
 
     private static int collectVariableRenames(String fileName, char[] mask, List<IdentifierRename> renames, int keywordStart) {

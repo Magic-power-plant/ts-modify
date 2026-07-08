@@ -1,8 +1,10 @@
 package com.pingsu.tsmodify.mixin;
 
 import com.pingsu.tsmodify.typescript.TypeScriptTranspiler;
+import com.pingsu.tsmodify.typescript.module.TypeScriptModuleRegistry;
 import dev.latvian.mods.kubejs.script.ScriptFileInfo;
 import dev.latvian.mods.kubejs.script.ScriptSource;
+import dev.latvian.mods.kubejs.script.ScriptType;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -28,6 +30,15 @@ public abstract class ScriptFileInfoMixin {
             remap = false
     )
     private List<String> tsmodify$transpileTypeScript(ScriptSource source, ScriptFileInfo info) throws IOException {
-        return TypeScriptTranspiler.transpile(file, source.readSource(info));
+        List<String> sourceLines = source.readSource(info);
+        if (!TypeScriptTranspiler.isTranspilableTypeScriptFile(file)) {
+            return sourceLines;
+        }
+
+        ScriptType scriptType = TypeScriptModuleRegistry.inferScriptType(source, info);
+        if (scriptType == null) {
+            return TypeScriptTranspiler.transpile(file, sourceLines);
+        }
+        return TypeScriptModuleRegistry.preload(scriptType, info.pack.namespace, file, sourceLines);
     }
 }

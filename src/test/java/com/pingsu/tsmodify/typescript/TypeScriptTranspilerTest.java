@@ -14,7 +14,7 @@ class TypeScriptTranspilerTest {
     @Test
     void kubejsModeTranspilesTypeScriptAndKeepsRuntimeScriptCompatible() {
         String source = """
-                import { helper } from "./helper.ts";
+                import { helper } from "./helper";
                 export {};
 
                 interface RecipeEvent {
@@ -88,6 +88,27 @@ class TypeScriptTranspilerTest {
         assertFalse(code.contains(".outputItems(event.proxyRecipe)(event).mbdRecipe"));
         assertTrue(code.contains(".outputItems(event.proxyRecipe);"));
         assertTrue(code.contains("event.mbdRecipe = recipe.buildMBDRecipe();"));
+    }
+
+    @Test
+    void kubejsModuleBodyConvertsStaticImportsAndExportsToRuntimeModuleCalls() {
+        String source = """
+                import label, { sharedItems } from "./global";
+
+                const localItems = sharedItems;
+                export const value = label(localItems[0]);
+                """;
+
+        TypeScriptSourceTranspileResult result = TypeScriptTranspiler.transpileKubeJsModuleBody(
+                "client_scripts/tooltips.ts",
+                source);
+
+        String code = result.code();
+        assertFalse(code.contains("import {"));
+        assertFalse(code.contains("export const"));
+        assertTrue(code.contains("require(\"./global\")"));
+        assertTrue(code.contains("exports.value = value"));
+        assertTrue(code.contains("sharedItems"));
     }
 
     @Test

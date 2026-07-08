@@ -18,11 +18,14 @@ The main transpilation path is backed by `swc4j`, using SWC's TypeScript parser 
 
 KubeJS runtime mode also applies KubeJS-specific compatibility steps after SWC emits JavaScript:
 
-- static `import` and `export` declarations are stripped because KubeJS script folders are not loaded as an ES module graph
-- top-level declarations are renamed to file-unique names so helpers from separate script files do not collide
+- static `import` and `export` declarations are transformed to TS Modify's runtime module loader
+- every TypeScript file runs in a CommonJS-style module scope with its own `exports` object and module cache
+- relative imports are supported inside the same script domain, such as `server_scripts` importing another `server_scripts` file
+- extensionless relative imports are recommended, for example `./global` instead of `./global.ts`, because TypeScript and IDE language services reject `.ts` specifiers unless `allowImportingTsExtensions` is enabled
+- `kubejs/shared_scripts` is available as shared source for server and client scripts; modules from that directory execute separately in each script context
 - output targets ES2015 / ES6 for KubeJS; newer syntax such as optional chaining is lowered, while ES6 syntax such as arrow functions and `const` / `let` is preserved
 
-KubeJS global bindings such as `ServerEvents`, `ItemEvents`, `StartupEvents`, and explicit assignments to shared objects such as `global` remain visible. Undeclared assignments also follow normal JavaScript behavior, so prefer `let`, `const`, `var`, `function`, or `class` for file-local state.
+KubeJS global bindings such as `ServerEvents`, `ItemEvents`, and `StartupEvents` remain visible inside modules. Use `export` / `import` for TypeScript modules, and use explicit assignments to shared objects such as `global` only when you intentionally want normal KubeJS global behavior.
 
 ## Supported Script Style
 
@@ -45,7 +48,31 @@ function addRecipe(event: RecipeEvent): void {
 ServerEvents.recipes(event => addRecipe(event))
 ```
 
-The `export {}` marker is useful for IDEs because it makes each TypeScript file a module for type-analysis purposes. TS Modify removes that marker before Rhino evaluates the script.
+Exports are module values, not global variables:
+
+```ts
+// kubejs/server_scripts/global.ts
+export const sharedItems = ["minecraft:stone"]
+
+// kubejs/server_scripts/consumer.ts
+import { sharedItems } from "./global"
+
+ServerEvents.recipes(event => {
+  console.info(sharedItems.length)
+})
+```
+
+Shared source can be placed under `kubejs/shared_scripts` and imported from both server and client scripts:
+
+```ts
+// kubejs/shared_scripts/items.ts
+export const hiddenItems = ["minecraft:stone"]
+
+// kubejs/client_scripts/tooltips.ts
+import { hiddenItems } from "../shared_scripts/items"
+```
+
+The shared module is read by both script domains but is not the same Rhino object across server and client contexts. Each side evaluates and caches its own copy.
 
 ## Project Transpilation
 
@@ -70,7 +97,7 @@ Without `--continue`, the first file error fails the run. With `--continue`, the
 
 ## Scope
 
-SWC handles TypeScript syntax transpilation. TS Modify does not perform type checking or module bundling. Runtime KubeJS mode intentionally strips static module declarations; project mode preserves module syntax and rewrites relative `.ts`-family specifiers to their emitted JavaScript extensions.
+SWC handles TypeScript syntax transpilation. TS Modify does not perform type checking or bundling. Runtime KubeJS mode supports static module syntax through a CommonJS-style loader with same-domain and `shared_scripts` resolution; project mode preserves module syntax and rewrites relative `.ts`-family specifiers to their emitted JavaScript extensions.
 
 The mod vendors the swc4j Java API subset that TS Modify uses, but the SWC execution path no longer loads swc4j JNI libraries. The build compiles the local `wasm/swc4j-bridge` Rust crate to `wasm32-wasip1`, packages `swc4j/swc4j_bridge.wasm` as a mod resource, and calls it through the pure Java Chicory WebAssembly runtime.
 

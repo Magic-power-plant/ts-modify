@@ -11,6 +11,7 @@ import com.caoccao.javet.swc4j.outputs.Swc4jTransformOutput;
 import com.caoccao.javet.swc4j.outputs.Swc4jTranspileOutput;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptDeclarationStripper;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptAutomaticSemicolonGuard;
+import com.pingsu.tsmodify.typescript.syntax.TypeScriptCommonJsModuleTransformer;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptEnumTransformer;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptFileScopeIsolator;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptSyntaxStripper;
@@ -61,10 +62,13 @@ public final class TypeScriptTranspiler {
                 code = rewriteTypeScriptModuleSpecifiers(code);
             }
             if (config.stripStaticModuleSyntax()) {
-                code = stripStaticModuleSyntax(code);
+                code = TypeScriptDeclarationStripper.stripImportStatements(code);
             }
             if (config.isolateTopLevelNames()) {
                 code = TypeScriptFileScopeIsolator.isolate(fileName, code);
+            }
+            if (config.stripStaticModuleSyntax()) {
+                code = TypeScriptDeclarationStripper.stripExportStatements(code);
             }
             if (config.transformTarget() != null) {
                 code = transformJavaScript(fileName, code, config);
@@ -80,6 +84,18 @@ public final class TypeScriptTranspiler {
             throw new TypeScriptTranspileException(
                     "Failed to transpile TypeScript source '" + fileName + "' with swc4j", swcFailure);
         }
+    }
+
+    public static TypeScriptSourceTranspileResult transpileKubeJsModuleBody(String fileName, String source) {
+        TypeScriptTranspileConfig config = TypeScriptTranspileConfig.KUBEJS.toBuilder()
+                .stripStaticModuleSyntax(false)
+                .isolateTopLevelNames(false)
+                .build();
+        TypeScriptSourceTranspileResult result = transpileSource(fileName, source, config);
+        return new TypeScriptSourceTranspileResult(
+                TypeScriptCommonJsModuleTransformer.transform(result.code()),
+                result.sourceMap(),
+                result.legacyFallback());
     }
 
     public static boolean isTranspilableTypeScriptFile(String fileName) {
@@ -140,11 +156,6 @@ public final class TypeScriptTranspiler {
                 .setTarget(config.transformTarget());
         Swc4jTransformOutput output = SWC4J.transform(source, options);
         return output.getCode();
-    }
-
-    private static String stripStaticModuleSyntax(String source) {
-        String transformed = TypeScriptDeclarationStripper.stripImportStatements(source);
-        return TypeScriptDeclarationStripper.stripExportStatements(transformed);
     }
 
     private static String legacyTranspile(String fileName, String source, TypeScriptTranspileConfig config) {
