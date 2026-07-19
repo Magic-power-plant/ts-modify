@@ -27,6 +27,29 @@ KubeJS runtime mode also applies KubeJS-specific compatibility steps after SWC e
 
 KubeJS global bindings such as `ServerEvents`, `ItemEvents`, and `StartupEvents` remain visible inside modules. Use `export` / `import` for TypeScript modules, and use explicit assignments to shared objects such as `global` only when you intentionally want normal KubeJS global behavior.
 
+## Error Diagnostics
+
+TS Modify keeps the original exception as the cause and adds a structured diagnostic message at each TypeScript boundary. Runtime errors now identify:
+
+- the failing phase, such as `SWC transpilation`, `TypeScript post-processing`, `script preload`, `module resolution`, or `module execution`;
+- the source file and module ID when they are available;
+- the requester and module chain for nested imports;
+- the source line, column, and a short code frame when SWC or Rhino reports a location;
+- the listener registration file and line for KubeJS event callback failures.
+
+Typical output has this shape:
+
+```text
+TS Modify error during module execution [source=server_scripts/machine/crafter.ts]
+  [module=pack:machine/crafter.ts] [module-chain=pack:machine/crafter.ts]
+  at line 42, column 17: <original exception message>
+    41 | const input = ...
+    42 | const result = ...
+       |                 ^
+```
+
+The original Java/Rhino stack trace is still available as the exception cause. For module resolution failures, inspect both the outer module-execution message and its `Caused by` entry; the latter contains the exact requester and unresolved specifier.
+
 ## Supported Script Style
 
 ```ts

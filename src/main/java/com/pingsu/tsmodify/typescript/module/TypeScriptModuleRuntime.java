@@ -1,5 +1,6 @@
 package com.pingsu.tsmodify.typescript.module;
 
+import com.pingsu.tsmodify.typescript.TypeScriptErrorReporter;
 import com.pingsu.tsmodify.typescript.TypeScriptTranspileException;
 import dev.latvian.mods.kubejs.script.ScriptManager;
 import dev.latvian.mods.kubejs.script.ScriptType;
@@ -9,7 +10,10 @@ import dev.latvian.mods.rhino.Function;
 import dev.latvian.mods.rhino.NativeObject;
 import dev.latvian.mods.rhino.Scriptable;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public final class TypeScriptModuleRuntime {
@@ -17,6 +21,7 @@ public final class TypeScriptModuleRuntime {
     private final Context context;
     private final Scriptable topLevelScope;
     private final Map<String, ModuleExecution> executions;
+    private final Deque<String> executionStack;
 
     public TypeScriptModuleRuntime(ScriptManager manager) {
         this(TypeScriptScriptDomain.from(manager.scriptType), manager.context, manager.topLevelScope);
@@ -31,6 +36,7 @@ public final class TypeScriptModuleRuntime {
         this.context = context;
         this.topLevelScope = topLevelScope;
         executions = new HashMap<>();
+        executionStack = new ArrayDeque<>();
     }
 
     public Object requireSelf(String moduleId, Object scopeArg) {
@@ -38,30 +44,45 @@ public final class TypeScriptModuleRuntime {
     }
 
     public Object require(String specifier, String requesterId, Object scopeArg) {
-        String moduleId = TypeScriptModuleRegistry.resolve(domain, requesterId, specifier);
+        String moduleId;
+        try {
+            moduleId = TypeScriptModuleRegistry.resolve(domain, requesterId, specifier);
+        } catch (RuntimeException failure) {
+            throw TypeScriptErrorReporter.moduleResolutionFailure(domain.name(), requesterId, specifier, failure);
+        }
         return load(moduleId, toScope(scopeArg));
     }
 
     private Object load(String moduleId, Scriptable scope) {
+        if (moduleId == null || moduleId.isBlank()) {
+            throw TypeScriptErrorReporter.moduleExecutionFailure(
+                    "<missing>",
+                    "<unknown>",
+                    "",
+                    List.of(),
+                    new IllegalArgumentException("Cannot load a TypeScript module without an ID"));
+        }
         ModuleExecution existing = executions.get(moduleId);
         if (existing != null) {
             return existing.exports;
         }
 
-        TypeScriptModuleRegistry.ModuleSource source = TypeScriptModuleRegistry.getSource(domain, moduleId);
-        if (source == null) {
-            throw new TypeScriptTranspileException("TypeScript module '" + moduleId + "' is not registered");
-        }
-
-        NativeObject exports = new NativeObject(context);
-        exports.setParentScope(scope);
-        NativeObject module = new NativeObject(context);
-        module.setParentScope(scope);
-        module.put(context, "exports", module, exports);
-
-        ModuleExecution execution = new ModuleExecution(exports);
-        executions.put(moduleId, execution);
+        executionStack.addLast(moduleId);
+        TypeScriptModuleRegistry.ModuleSource source = null;
         try {
+            source = TypeScriptModuleRegistry.getSource(domain, moduleId);
+            if (source == null) {
+                throw new TypeScriptTranspileException("TypeScript module '" + moduleId + "' is not registered");
+            }
+
+            NativeObject exports = new NativeObject(context);
+            exports.setParentScope(scope);
+            NativeObject module = new NativeObject(context);
+            module.setParentScope(scope);
+            module.put(context, "exports", module, exports);
+
+            ModuleExecution execution = new ModuleExecution(exports);
+            executions.put(moduleId, execution);
             Function factory = compileFactory(moduleId, source, scope);
             factory.call(context, scope, exports, new Object[]{
                     new RequireFunction(this, moduleId, scope),
@@ -75,7 +96,14 @@ public final class TypeScriptModuleRuntime {
             return execution.exports;
         } catch (RuntimeException e) {
             executions.remove(moduleId);
-            throw e;
+            throw TypeScriptErrorReporter.moduleExecutionFailure(
+                    moduleId,
+                    source == null ? moduleId : source.sourceName(),
+                    source == null ? "" : source.body(),
+                    List.copyOf(executionStack),
+                    e);
+        } finally {
+            executionStack.removeLast();
         }
     }
 
@@ -119,8 +147,11 @@ public final class TypeScriptModuleRuntime {
         @Override
         public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
             if (args.length == 0 || args[0] == null) {
-                throw new TypeScriptTranspileException(
-                        "TypeScript module '" + requesterId + "' called require() without a specifier");
+                throw TypeScriptErrorReporter.moduleResolutionFailure(
+                        runtime.domain.name(),
+                        requesterId,
+                        "<missing>",
+                        new IllegalArgumentException("require() was called without a module specifier"));
             }
             return runtime.require(String.valueOf(args[0]), requesterId, moduleScope);
         }

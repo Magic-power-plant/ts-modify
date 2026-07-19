@@ -6,7 +6,8 @@
   "refmap": "tsmodify.refmap.json",
   "mixins": [
     "RecipeJSMixin",
-    "ScriptFileInfoMixin"
+    "ScriptFileInfoMixin",
+    "EventHandlerContainerMixin"
   ],
   "client": [
   ],

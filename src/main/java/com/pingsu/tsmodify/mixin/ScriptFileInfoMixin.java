@@ -1,5 +1,6 @@
 package com.pingsu.tsmodify.mixin;
 
+import com.pingsu.tsmodify.typescript.TypeScriptErrorReporter;
 import com.pingsu.tsmodify.typescript.TypeScriptTranspiler;
 import com.pingsu.tsmodify.typescript.module.TypeScriptModuleRegistry;
 import dev.latvian.mods.kubejs.script.ScriptFileInfo;
@@ -35,10 +36,19 @@ public abstract class ScriptFileInfoMixin {
             return sourceLines;
         }
 
-        ScriptType scriptType = TypeScriptModuleRegistry.inferScriptType(source, info);
-        if (scriptType == null) {
-            return TypeScriptTranspiler.transpile(file, sourceLines);
+        ScriptType scriptType = null;
+        try {
+            scriptType = TypeScriptModuleRegistry.inferScriptType(source, info);
+            if (scriptType == null) {
+                return TypeScriptTranspiler.transpile(file, sourceLines);
+            }
+            return TypeScriptModuleRegistry.preload(scriptType, info.pack.namespace, file, sourceLines);
+        } catch (RuntimeException failure) {
+            throw TypeScriptErrorReporter.scriptPreloadFailure(
+                    file,
+                    scriptType == null ? "unknown" : scriptType.name,
+                    sourceLines,
+                    failure);
         }
-        return TypeScriptModuleRegistry.preload(scriptType, info.pack.namespace, file, sourceLines);
     }
 }

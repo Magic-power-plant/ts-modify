@@ -52,11 +52,31 @@ public final class TypeScriptTranspiler {
             return new TypeScriptSourceTranspileResult(source, null, false);
         }
 
+        String swcSource;
         try {
-            String swcSource = config.guardAutomaticSemicolonHazards()
+            swcSource = config.guardAutomaticSemicolonHazards()
                     ? TypeScriptAutomaticSemicolonGuard.guard(source)
                     : source;
-            TypeScriptSourceTranspileResult result = swcTranspile(fileName, swcSource, config);
+        } catch (Throwable preProcessFailure) {
+            throw TypeScriptErrorReporter.transpileFailure(
+                    fileName, source, "TypeScript pre-processing", preProcessFailure);
+        }
+        TypeScriptSourceTranspileResult result;
+        try {
+            result = swcTranspile(fileName, swcSource, config);
+        } catch (Throwable swcFailure) {
+            if (config.legacyFallback()) {
+                try {
+                    return new TypeScriptSourceTranspileResult(legacyTranspile(fileName, source, config), null, true);
+                } catch (Throwable fallbackFailure) {
+                    throw TypeScriptErrorReporter.transpileFailure(
+                            fileName, source, "legacy fallback", fallbackFailure);
+                }
+            }
+            throw TypeScriptErrorReporter.transpileFailure(fileName, source, "SWC transpilation", swcFailure);
+        }
+
+        try {
             String code = result.code();
             if (config.rewriteTypeScriptModuleSpecifiers()) {
                 code = rewriteTypeScriptModuleSpecifiers(code);
@@ -77,12 +97,9 @@ public final class TypeScriptTranspiler {
                 code = TypeScriptSyntaxStripper.stripPostEs2015Syntax(code);
             }
             return new TypeScriptSourceTranspileResult(code, result.sourceMap(), false);
-        } catch (Throwable swcFailure) {
-            if (config.legacyFallback()) {
-                return new TypeScriptSourceTranspileResult(legacyTranspile(fileName, source, config), null, true);
-            }
-            throw new TypeScriptTranspileException(
-                    "Failed to transpile TypeScript source '" + fileName + "' with swc4j", swcFailure);
+        } catch (Throwable postProcessFailure) {
+            throw TypeScriptErrorReporter.transpileFailure(
+                    fileName, source, "TypeScript post-processing", postProcessFailure);
         }
     }
 

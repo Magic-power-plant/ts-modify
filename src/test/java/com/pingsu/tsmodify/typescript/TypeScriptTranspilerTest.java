@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.caoccao.javet.swc4j.enums.Swc4jEsVersion;
@@ -139,6 +140,20 @@ class TypeScriptTranspilerTest {
         assertTrue(code.contains("require(\"./legacy.cjs\")"));
         assertFalse(code.contains("__tsmodify_"));
         assertTrue(code.contains("export"));
+    }
+
+    @Test
+    void reportsInvalidSourceWithTranspilationContext() {
+        TypeScriptTranspileException failure = assertThrows(
+                TypeScriptTranspileException.class,
+                () -> TypeScriptTranspiler.transpileSource(
+                        "server_scripts/broken.ts",
+                        "const broken: string = ;",
+                        TypeScriptTranspileConfig.KUBEJS));
+
+        assertEquals("SWC transpilation", failure.context().phase());
+        assertTrue(failure.getMessage().contains("server_scripts/broken.ts"));
+        assertTrue(failure.getMessage().contains("TS Modify error during SWC transpilation"));
     }
 
     @Test

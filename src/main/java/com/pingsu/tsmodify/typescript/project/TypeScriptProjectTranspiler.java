@@ -1,5 +1,6 @@
 package com.pingsu.tsmodify.typescript.project;
 
+import com.pingsu.tsmodify.typescript.TypeScriptErrorReporter;
 import com.pingsu.tsmodify.typescript.TypeScriptSourceTranspileResult;
 import com.pingsu.tsmodify.typescript.TypeScriptTranspileConfig;
 import com.pingsu.tsmodify.typescript.TypeScriptTranspileException;
@@ -111,7 +112,7 @@ public final class TypeScriptProjectTranspiler {
             Files.copy(sourcePath, outputPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
             return new TypeScriptFileTranspileResult(sourcePath, outputPath, false, null);
         } catch (IOException | RuntimeException e) {
-            throw new TypeScriptTranspileException("Failed to process project file '" + sourcePath + "'", e);
+            throw TypeScriptErrorReporter.projectFileFailure(sourcePath, e);
         }
     }
 
