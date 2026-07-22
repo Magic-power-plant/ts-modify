@@ -30,6 +30,7 @@ TS Modify 解决的是这个运行时兼容问题：让整合包或脚本开发�
 - 支持 `kubejs/shared_scripts` 作为 server/client 都可读取的共享源码目录，模块会在各自脚本上下文中分别执行和缓存；
 - 输出目标为 ES2015，并降低部分 Rhino 不兼容的新语法，例如可选链；
 - 在链式调用后接 TypeScript 类型断言的场景中补充分号保护，避免转译前后语义被错误拼接。
+- ProbeJS 生成声明时，如果某个 Mod 的泛型父类或接口引用了当前环境缺失的可选 API，会退回原始类型元数据继续生成，避免整次 dump 中断并保留 `Java.loadClass(...)` 已捕获类的声明。
 
 更详细的 TypeScript 兼容说明见 [docs/kubejs-typescript.md](docs/kubejs-typescript.md)。
 

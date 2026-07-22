@@ -7,7 +7,9 @@
   "mixins": [
     "RecipeJSMixin",
     "ScriptFileInfoMixin",
-    "EventHandlerContainerMixin"
+    "EventHandlerContainerMixin",
+    "ProbeJSClassInfoMixin",
+    "ArchitecturyFlowingFluidMixin"
   ],
   "client": [
   ],

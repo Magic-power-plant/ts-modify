@@ -27,6 +27,12 @@ KubeJS runtime mode also applies KubeJS-specific compatibility steps after SWC e
 
 KubeJS global bindings such as `ServerEvents`, `ItemEvents`, and `StartupEvents` remain visible inside modules. Use `export` / `import` for TypeScript modules, and use explicit assignments to shared objects such as `global` only when you intentionally want normal KubeJS global behavior.
 
+## KubeJS Fluid Type Registration
+
+For every fluid created by KubeJS through `StartupEvents.registry("fluid", ...)`, TS Modify also registers its Forge `FluidType` in `ForgeRegistries.FLUID_TYPES`. The fluid type uses the source fluid's resource location, so a source fluid named `pack:oil` has a fluid type named `pack:oil`.
+
+The source fluid and its `pack:flowing_oil` variant return the exact same registered `FluidType` instance. The flowing-fluid ID remains an entry only in `minecraft:fluid`; TS Modify does not create a second `forge:fluid_type` entry for it.
+
 ## Error Diagnostics
 
 TS Modify keeps the original exception as the cause and adds a structured diagnostic message at each TypeScript boundary. Runtime errors now identify:
