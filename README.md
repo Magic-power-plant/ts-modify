@@ -33,6 +33,8 @@ TS Modify 解决的是这个运行时兼容问题：让整合包或脚本开发�
 - ProbeJS 生成声明时，如果某个 Mod 的泛型父类或接口引用了当前环境缺失的可选 API，会退回原始类型元数据继续生成，避免整次 dump 中断并保留 `Java.loadClass(...)` 已捕获类的声明。
 
 更详细的 TypeScript 兼容说明见 [docs/kubejs-typescript.md](docs/kubejs-typescript.md)。
+Rhino 模块运行时的压力测试与 JFR 采样说明见
+[docs/rhino-performance.md](docs/rhino-performance.md)。
 
 ### 项目级 TypeScript 转译工具
 

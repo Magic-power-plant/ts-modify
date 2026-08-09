@@ -122,10 +122,13 @@ dependencies {
     implementation fg.deobf("dev.architectury:architectury-forge:${architectury_version}")
     implementation fg.deobf("curse.maven:probejs-585406:5227399")
 
-    implementation "com.dylibso.chicory:runtime:${chicoryVersion}"
-    implementation "com.dylibso.chicory:wasi:${chicoryVersion}"
-    implementation "com.dylibso.chicory:wasm:${chicoryVersion}"
-    implementation "com.dylibso.chicory:log:${chicoryVersion}"
+    // Forge loads exploded development mods in a separate module layer. Chicory
+    // must therefore be on ModLauncher's minecraft classpath, not only Gradle's
+    // application classpath. minecraftLibrary also extends implementation.
+    minecraftLibrary "com.dylibso.chicory:runtime:${chicoryVersion}"
+    minecraftLibrary "com.dylibso.chicory:wasi:${chicoryVersion}"
+    minecraftLibrary "com.dylibso.chicory:wasm:${chicoryVersion}"
+    minecraftLibrary "com.dylibso.chicory:log:${chicoryVersion}"
     jarJar "com.dylibso.chicory:runtime:[${chicoryVersion},${chicoryVersion}]"
     jarJar "com.dylibso.chicory:wasi:[${chicoryVersion},${chicoryVersion}]"
     jarJar "com.dylibso.chicory:wasm:[${chicoryVersion},${chicoryVersion}]"
@@ -214,5 +217,83 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 tasks.named('test', Test).configure {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        excludeTags 'performance'
+    }
+}
+
+def rhinoStressReport = layout.buildDirectory.file('reports/rhino-stress/rhino-stress.json')
+def rhinoMixinStressReport = layout.buildDirectory.file('reports/rhino-stress/rhino-mixin-stress.json')
+def rhinoBaselineStressReport = layout.buildDirectory.file('reports/rhino-stress/rhino-baseline-stress.json')
+def rhinoBaselineMixinStressReport = layout.buildDirectory.file('reports/rhino-stress/rhino-baseline-mixin-stress.json')
+def rhinoStressJfr = layout.buildDirectory.file('reports/rhino-stress/rhino-stress.jfr')
+def rhinoStressJfrRepository = layout.buildDirectory.dir('tmp/rhino-stress-jfr')
+
+tasks.register('rhinoStressTest', Test) {
+    group = 'verification'
+    description = 'Runs the repeatable Rhino module-runtime stress profile.'
+    dependsOn tasks.named('testClasses')
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    maxParallelForks = 1
+
+    useJUnitPlatform {
+        includeTags 'performance'
+    }
+    filter {
+        includeTestsMatching 'com.pingsu.tsmodify.typescript.module.RhinoStressProfileTest'
+    }
+    reports.junitXml.outputLocation = layout.buildDirectory.dir('test-results/rhinoStressTest')
+    reports.html.outputLocation = layout.buildDirectory.dir('reports/tests/rhinoStressTest')
+    systemProperty 'tsmodify.rhino.stress.report', rhinoStressReport.get().asFile.absolutePath
+    systemProperty 'tsmodify.rhino.stress.mixinReport', rhinoMixinStressReport.get().asFile.absolutePath
+    systemProperty 'tsmodify.rhino.stress.jfrEnabled', providers.gradleProperty('rhinoStressJfr').isPresent()
+    systemProperty 'tsmodify.rhino.stress.iterations', providers.gradleProperty('rhinoStressIterations').orElse('100000').get()
+    systemProperty 'tsmodify.rhino.stress.warmupRounds', providers.gradleProperty('rhinoStressWarmupRounds').orElse('3').get()
+    systemProperty 'tsmodify.rhino.stress.measurementRounds', providers.gradleProperty('rhinoStressMeasurementRounds').orElse('7').get()
+    systemProperty 'tsmodify.rhino.stress.coldModuleCount', providers.gradleProperty('rhinoStressColdModuleCount').orElse('200').get()
+    systemProperty 'tsmodify.rhino.stress.directModuleFactoryCompiler', 'true'
+    testLogging {
+        events 'passed', 'failed'
+        showStandardStreams = true
+    }
+
+    if (providers.gradleProperty('rhinoStressJfr').isPresent()) {
+        doFirst {
+            rhinoStressJfr.get().asFile.parentFile.mkdirs()
+            rhinoStressJfrRepository.get().asFile.mkdirs()
+        }
+        jvmArgs "-XX:FlightRecorderOptions=repository=${rhinoStressJfrRepository.get().asFile.absolutePath}"
+        jvmArgs "-XX:StartFlightRecording=filename=${rhinoStressJfr.get().asFile.absolutePath},settings=profile,dumponexit=true"
+    }
+}
+
+tasks.register('rhinoBaselineStressTest', Test) {
+    group = 'verification'
+    description = 'Runs the Rhino module-runtime baseline without the direct module factory compiler.'
+    dependsOn tasks.named('testClasses')
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    maxParallelForks = 1
+
+    useJUnitPlatform {
+        includeTags 'performance'
+    }
+    filter {
+        includeTestsMatching 'com.pingsu.tsmodify.typescript.module.RhinoStressProfileTest'
+    }
+    reports.junitXml.outputLocation = layout.buildDirectory.dir('test-results/rhinoBaselineStressTest')
+    reports.html.outputLocation = layout.buildDirectory.dir('reports/tests/rhinoBaselineStressTest')
+    systemProperty 'tsmodify.rhino.stress.report', rhinoBaselineStressReport.get().asFile.absolutePath
+    systemProperty 'tsmodify.rhino.stress.mixinReport', rhinoBaselineMixinStressReport.get().asFile.absolutePath
+    systemProperty 'tsmodify.rhino.stress.jfrEnabled', 'false'
+    systemProperty 'tsmodify.rhino.stress.iterations', providers.gradleProperty('rhinoStressIterations').orElse('100000').get()
+    systemProperty 'tsmodify.rhino.stress.warmupRounds', providers.gradleProperty('rhinoStressWarmupRounds').orElse('3').get()
+    systemProperty 'tsmodify.rhino.stress.measurementRounds', providers.gradleProperty('rhinoStressMeasurementRounds').orElse('7').get()
+    systemProperty 'tsmodify.rhino.stress.coldModuleCount', providers.gradleProperty('rhinoStressColdModuleCount').orElse('200').get()
+    systemProperty 'tsmodify.rhino.stress.directModuleFactoryCompiler', 'false'
+    testLogging {
+        events 'passed', 'failed'
+        showStandardStreams = true
+    }
 }

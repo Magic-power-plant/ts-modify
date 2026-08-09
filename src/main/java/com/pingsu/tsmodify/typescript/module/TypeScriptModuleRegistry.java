@@ -176,9 +176,12 @@ public final class TypeScriptModuleRegistry {
         }
 
         ParsedModuleId parsed = parseModuleId(moduleId);
+        if (!TypeScriptTranspiler.isTranspilableTypeScriptFile(parsed.path())) {
+            return false;
+        }
         Path root = parsed.shared() ? domain.sharedRoot() : domain.root();
         Path path = root.resolve(parsed.path()).normalize();
-        return Files.isRegularFile(path) && TypeScriptTranspiler.isTranspilableTypeScriptFile(path.toString());
+        return Files.isRegularFile(path);
     }
 
     private static ModuleSource loadSourceFromDisk(TypeScriptScriptDomain domain, String moduleId) {
@@ -188,8 +191,8 @@ public final class TypeScriptModuleRegistry {
         Path normalizedRoot = root.toAbsolutePath().normalize();
         Path normalizedSource = sourcePath.toAbsolutePath().normalize();
         if (!normalizedSource.startsWith(normalizedRoot)
-                || !Files.isRegularFile(normalizedSource)
-                || !TypeScriptTranspiler.isTranspilableTypeScriptFile(normalizedSource.toString())) {
+                || !TypeScriptTranspiler.isTranspilableTypeScriptFile(normalizedSource.toString())
+                || !Files.isRegularFile(normalizedSource)) {
             return null;
         }
 

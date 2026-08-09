@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.pingsu.tsmodify.typescript.TypeScriptTranspiler;
 import dev.latvian.mods.rhino.Context;
+import dev.latvian.mods.rhino.Function;
 import dev.latvian.mods.rhino.Scriptable;
 import java.nio.file.Path;
 import org.junit.jupiter.api.AfterEach;
@@ -74,6 +75,29 @@ class TypeScriptModuleRuntimeTest {
 
         assertEquals("shared-tooltip", exportedValue(server, "test:consumer.ts", "value"));
         assertEquals("shared-tooltip", exportedValue(client, "test:consumer.ts", "value"));
+    }
+
+    @Test
+    void resolvesExtensionlessModulesAndSupportsRepeatedDynamicRequireCalls() {
+        TypeScriptScriptDomain domain = domain("server");
+        register(domain, "test:one.ts", "export const value = 1;");
+        register(domain, "test:two.ts", "export const value = 2;");
+        register(domain, "test:consumer.ts", """
+                export function values(): number {
+                  return require("./one").value + require("./two").value + require("./one").value;
+                }
+                """);
+
+        assertEquals("test:one.ts", TypeScriptModuleRegistry.resolve(domain, "test:consumer.ts", "./one"));
+
+        Context context = Context.enter();
+        Scriptable scope = context.initStandardObjects();
+        TypeScriptModuleRuntime runtime = new TypeScriptModuleRuntime(domain, context, scope);
+        Scriptable exports = (Scriptable) runtime.requireSelf("test:consumer.ts", scope);
+        Function values = (Function) exports.get(context, "values", exports);
+
+        Object result = values.call(context, scope, exports, new Object[0]);
+        assertEquals(4, ((Number) result).intValue());
     }
 
     private Object exportedValue(TypeScriptScriptDomain domain, String moduleId, String exportName) {

@@ -2,6 +2,7 @@ package com.pingsu.tsmodify.typescript.module;
 
 import com.pingsu.tsmodify.typescript.TypeScriptErrorReporter;
 import com.pingsu.tsmodify.typescript.TypeScriptTranspileException;
+import com.pingsu.tsmodify.typescript.rhino.RhinoModuleFactoryCompiler;
 import dev.latvian.mods.kubejs.script.ScriptManager;
 import dev.latvian.mods.kubejs.script.ScriptType;
 import dev.latvian.mods.rhino.BaseFunction;
@@ -44,13 +45,17 @@ public final class TypeScriptModuleRuntime {
     }
 
     public Object require(String specifier, String requesterId, Object scopeArg) {
+        return load(resolveModuleId(specifier, requesterId), toScope(scopeArg));
+    }
+
+    private String resolveModuleId(String specifier, String requesterId) {
         String moduleId;
         try {
             moduleId = TypeScriptModuleRegistry.resolve(domain, requesterId, specifier);
         } catch (RuntimeException failure) {
             throw TypeScriptErrorReporter.moduleResolutionFailure(domain.name(), requesterId, specifier, failure);
         }
-        return load(moduleId, toScope(scopeArg));
+        return moduleId;
     }
 
     private Object load(String moduleId, Scriptable scope) {
@@ -111,6 +116,12 @@ public final class TypeScriptModuleRuntime {
             String moduleId,
             TypeScriptModuleRegistry.ModuleSource source,
             Scriptable scope) {
+        if (context instanceof RhinoModuleFactoryCompiler compiler) {
+            String factorySource = "function(require, exports, module) {\n" + source.body() + "\n}";
+            return compiler.compileModuleFactory(scope, factorySource, source.sourceName());
+        }
+
+        // Plain JVM tests instantiate Rhino without Mixin transformation.
         String factorySource = "(function(require, exports, module) {\n" + source.body() + "\n})";
         Object value = context.evaluateString(scope, factorySource, source.sourceName(), 1, null);
         if (value instanceof Function function) {
@@ -136,6 +147,8 @@ public final class TypeScriptModuleRuntime {
         private final TypeScriptModuleRuntime runtime;
         private final String requesterId;
         private final Scriptable moduleScope;
+        private String lastSpecifier;
+        private String lastResolvedModuleId;
 
         private RequireFunction(TypeScriptModuleRuntime runtime, String requesterId, Scriptable moduleScope) {
             this.runtime = runtime;
@@ -153,7 +166,14 @@ public final class TypeScriptModuleRuntime {
                         "<missing>",
                         new IllegalArgumentException("require() was called without a module specifier"));
             }
-            return runtime.require(String.valueOf(args[0]), requesterId, moduleScope);
+            String specifier = String.valueOf(args[0]);
+            if (!specifier.equals(lastSpecifier)) {
+                // A module factory owns this function, so its latest successful request is safe to reuse.
+                String resolvedModuleId = runtime.resolveModuleId(specifier, requesterId);
+                lastSpecifier = specifier;
+                lastResolvedModuleId = resolvedModuleId;
+            }
+            return runtime.load(lastResolvedModuleId, moduleScope);
         }
 
         @Override

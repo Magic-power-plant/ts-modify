@@ -117,8 +117,16 @@ public final class KubeJSFluidTypeRegistry {
         FluidType fluidType = Objects.requireNonNull(
                 source.getFluidType(),
                 () -> "KubeJS source fluid '" + builder.id + "' returned a null Forge fluid type");
-        requireHolder(builder.id, source).tsmodify$setRegisteredFluidType(fluidType);
-        requireHolder(builder.flowingFluid.id, flowing).tsmodify$setRegisteredFluidType(fluidType);
+        RegisteredFluidTypeHolder sourceHolder = requireHolder(builder.id, source);
+        RegisteredFluidTypeHolder flowingHolder = requireHolder(builder.flowingFluid.id, flowing);
+        sourceHolder.tsmodify$setRegisteredFluidType(fluidType);
+        flowingHolder.tsmodify$setRegisteredFluidType(fluidType);
+
+        if (source.getFluidType() != fluidType || flowing.getFluidType() != fluidType) {
+            throw new IllegalStateException(
+                    "KubeJS fluid pair '" + builder.id
+                            + "' did not retain TS Modify's shared registered fluid type");
+        }
         return fluidType;
     }
 
