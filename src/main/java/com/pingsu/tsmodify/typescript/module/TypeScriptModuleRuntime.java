@@ -2,6 +2,7 @@ package com.pingsu.tsmodify.typescript.module;
 
 import com.pingsu.tsmodify.typescript.TypeScriptErrorReporter;
 import com.pingsu.tsmodify.typescript.TypeScriptTranspileException;
+import com.pingsu.tsmodify.typescript.rhino.RhinoScriptCompilationCache;
 import dev.latvian.mods.kubejs.script.ScriptManager;
 import dev.latvian.mods.kubejs.script.ScriptType;
 import dev.latvian.mods.rhino.BaseFunction;
@@ -126,7 +127,7 @@ public final class TypeScriptModuleRuntime {
             TypeScriptModuleRegistry.ModuleSource source,
             Scriptable scope) {
         String factorySource = "(function(require, exports, module) {\n" + source.body() + "\n})";
-        Object value = context.evaluateString(scope, factorySource, source.sourceName(), 1, null);
+        Object value = RhinoScriptCompilationCache.evaluate(context, scope, factorySource, source.sourceName(), 1, null);
         if (value instanceof Function function) {
             return function;
         }

@@ -33,10 +33,18 @@ TS Modify 解决的是这个运行时兼容问题：让整合包或脚本开发�
 - ProbeJS 生成声明时，如果某个 Mod 的泛型父类或接口引用了当前环境缺失的可选 API，会退回原始类型元数据继续生成，避免整次 dump 中断并保留 `Java.loadClass(...)` 已捕获类的声明。
 
 更详细的 TypeScript 兼容说明见 [docs/kubejs-typescript.md](docs/kubejs-typescript.md)。
-Rhino 模块运行时的压力测试与 JFR 采样说明见
-[docs/rhino-performance.md](docs/rhino-performance.md)，详细执行方案见
-[docs/rhino-performance-execution.md](docs/rhino-performance-execution.md)，实际
-Java 17 测量报告见 [docs/rhino-performance-report.md](docs/rhino-performance-report.md)。
+
+### Rhino 脚本加载优化
+
+TS Modify 会缓存未变更 KubeJS 脚本编译后的 Rhino `Script` 字节码，减少脚本重载时重复解析和编译 JavaScript 的开销。`ScriptFileMixin` 将 KubeJS `ScriptFile.load()` 的 `Context.evaluateString(...)` 调用重定向到 `RhinoScriptCompilationCache`；`ContextEvaluateStringMixin` 也会将普通、无安全域的 `Context.evaluateString(...)` 内部编译调用接入同一缓存。
+
+- 缓存命中时仅复用已编译的 `Script`，仍在当前 Rhino 上下文和作用域中执行；不会缓存或共享 KubeJS 作用域、模块导出对象及 JavaScript 函数实例，因此 server/client 脚本上下文保持隔离；
+- 缓存按脚本位置、起始行号、严格模式和观察者计数模式索引，并再次校验源码内容；源码变更会替换原有条目；
+- 默认保留 512 个最近使用的条目。可通过 JVM 属性 `tsmodify.rhino.scriptCache.maxEntries` 调整容量，设置为 `0` 可禁用缓存保留。
+
+在 Java 17 的独立基准中，128 个普通 JavaScript 脚本的预热重载中位数由 `46.624 ms` 降至 `7.672 ms`，延迟降低 `83.54%`，相对速度提升 `507.69%`，超过“至少 50%”的验收门槛。该结论只适用于已预热的 KubeJS 风格 Rhino 脚本重载；首次冷加载、任意解释器循环、事件回调、游戏刻、磁盘 I/O 与 TypeScript 转译不在此性能承诺范围内。
+
+测试方法和缓存行为见 [docs/rhino-performance.md](docs/rhino-performance.md)，详细执行方案见 [docs/rhino-performance-execution.md](docs/rhino-performance-execution.md)，实际 Java 17 测量报告见 [docs/rhino-performance-report.md](docs/rhino-performance-report.md)。
 
 ### 项目级 TypeScript 转译工具
 

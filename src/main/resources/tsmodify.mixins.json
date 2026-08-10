@@ -7,6 +7,8 @@
   "mixins": [
     "RecipeJSMixin",
     "ScriptFileInfoMixin",
+    "ScriptFileMixin",
+    "ContextEvaluateStringMixin",
     "EventHandlerContainerMixin",
     "ProbeJSClassInfoMixin",
     "ForgeFlowingFluidMixin",

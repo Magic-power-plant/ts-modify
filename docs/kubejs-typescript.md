@@ -14,6 +14,14 @@ In KubeJS `2001.6.5-build.14`, `KubeJS.loadScripts` and `ScriptManager.loadFromR
 
 TS Modify injects into `ScriptFileInfo.preload()` and rewrites TypeScript source before KubeJS evaluates it. Normal KubeJS behavior is preserved for `.js` files, and declaration files stay ignored.
 
+TS Modify also caches compiled Rhino bytecode for unchanged KubeJS script
+sources. The cache is used on later script reloads, including the small entry
+script generated for a TypeScript module. Repeated ordinary
+`Context.evaluateString` calls with a null security domain use the same cache.
+It retains no JavaScript scope, module export, or function instance, so server
+and client contexts remain separate. The first load still compiles normally;
+this is a reload optimization, not a claim about every Rhino execution path.
+
 The main transpilation path is backed by `swc4j`, using SWC's TypeScript parser and emitter instead of the old hand-written TypeScript stripper. Runtime mode supports the TypeScript-family script extensions `.ts`, `.tsx`, `.mts`, and `.cts`, excluding declaration files.
 
 KubeJS runtime mode also applies KubeJS-specific compatibility steps after SWC emits JavaScript:
