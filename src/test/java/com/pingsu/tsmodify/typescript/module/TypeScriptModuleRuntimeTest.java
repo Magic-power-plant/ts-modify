@@ -78,26 +78,26 @@ class TypeScriptModuleRuntimeTest {
     }
 
     @Test
-    void resolvesExtensionlessModulesAndSupportsRepeatedDynamicRequireCalls() {
+    void resolvesExtensionlessModulesAndSupportsAlternatingDynamicRequireCalls() {
         TypeScriptScriptDomain domain = domain("server");
         register(domain, "test:one.ts", "export const value = 1;");
         register(domain, "test:two.ts", "export const value = 2;");
+        register(domain, "test:three.ts", "export const value = 3;");
         register(domain, "test:consumer.ts", """
-                export function values(): number {
-                  return require("./one").value + require("./two").value + require("./one").value;
+                export function values(iterations: number): number {
+                  const modules = ["./one", "./two", "./three"];
+                  let total = 0;
+                  for (let index = 0; index < iterations; index++) {
+                    total += require(modules[index % modules.length]).value;
+                  }
+                  return total;
                 }
                 """);
 
         assertEquals("test:one.ts", TypeScriptModuleRegistry.resolve(domain, "test:consumer.ts", "./one"));
 
-        Context context = Context.enter();
-        Scriptable scope = context.initStandardObjects();
-        TypeScriptModuleRuntime runtime = new TypeScriptModuleRuntime(domain, context, scope);
-        Scriptable exports = (Scriptable) runtime.requireSelf("test:consumer.ts", scope);
-        Function values = (Function) exports.get(context, "values", exports);
-
-        Object result = values.call(context, scope, exports, new Object[0]);
-        assertEquals(4, ((Number) result).intValue());
+        assertAlternatingDynamicRequireResult(domain, false);
+        assertAlternatingDynamicRequireResult(domain, true);
     }
 
     private Object exportedValue(TypeScriptScriptDomain domain, String moduleId, String exportName) {
@@ -107,6 +107,23 @@ class TypeScriptModuleRuntimeTest {
         Object exports = runtime.requireSelf(moduleId, scope);
         Scriptable scriptableExports = (Scriptable) exports;
         return scriptableExports.get(context, exportName, scriptableExports);
+    }
+
+    private static void assertAlternatingDynamicRequireResult(
+            TypeScriptScriptDomain domain,
+            boolean retainResolvedModuleIds) {
+        Context context = Context.enter();
+        Scriptable scope = context.initStandardObjects();
+        TypeScriptModuleRuntime runtime = new TypeScriptModuleRuntime(
+                domain,
+                context,
+                scope,
+                retainResolvedModuleIds);
+        Scriptable exports = (Scriptable) runtime.requireSelf("test:consumer.ts", scope);
+        Function values = (Function) exports.get(context, "values", exports);
+
+        Object result = values.call(context, scope, exports, new Object[]{99});
+        assertEquals(198, ((Number) result).intValue());
     }
 
     private static void register(TypeScriptScriptDomain domain, String moduleId, String source) {

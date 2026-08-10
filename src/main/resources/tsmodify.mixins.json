@@ -8,7 +8,6 @@
     "RecipeJSMixin",
     "ScriptFileInfoMixin",
     "EventHandlerContainerMixin",
-    "RhinoContextMixin",
     "ProbeJSClassInfoMixin",
     "ForgeFlowingFluidMixin",
     "ArchitecturyFlowingFluidMixin"

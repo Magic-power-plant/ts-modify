@@ -2,7 +2,6 @@ package com.pingsu.tsmodify.typescript.module;
 
 import com.pingsu.tsmodify.typescript.TypeScriptErrorReporter;
 import com.pingsu.tsmodify.typescript.TypeScriptTranspileException;
-import com.pingsu.tsmodify.typescript.rhino.RhinoModuleFactoryCompiler;
 import dev.latvian.mods.kubejs.script.ScriptManager;
 import dev.latvian.mods.kubejs.script.ScriptType;
 import dev.latvian.mods.rhino.BaseFunction;
@@ -23,19 +22,29 @@ public final class TypeScriptModuleRuntime {
     private final Scriptable topLevelScope;
     private final Map<String, ModuleExecution> executions;
     private final Deque<String> executionStack;
+    private final boolean retainResolvedModuleIds;
 
     public TypeScriptModuleRuntime(ScriptManager manager) {
-        this(TypeScriptScriptDomain.from(manager.scriptType), manager.context, manager.topLevelScope);
+        this(TypeScriptScriptDomain.from(manager.scriptType), manager.context, manager.topLevelScope, true);
     }
 
     public TypeScriptModuleRuntime(ScriptType scriptType, Context context, Scriptable topLevelScope) {
-        this(TypeScriptScriptDomain.from(scriptType), context, topLevelScope);
+        this(TypeScriptScriptDomain.from(scriptType), context, topLevelScope, true);
     }
 
     public TypeScriptModuleRuntime(TypeScriptScriptDomain domain, Context context, Scriptable topLevelScope) {
+        this(domain, context, topLevelScope, true);
+    }
+
+    TypeScriptModuleRuntime(
+            TypeScriptScriptDomain domain,
+            Context context,
+            Scriptable topLevelScope,
+            boolean retainResolvedModuleIds) {
         this.domain = domain;
         this.context = context;
         this.topLevelScope = topLevelScope;
+        this.retainResolvedModuleIds = retainResolvedModuleIds;
         executions = new HashMap<>();
         executionStack = new ArrayDeque<>();
     }
@@ -90,7 +99,7 @@ public final class TypeScriptModuleRuntime {
             executions.put(moduleId, execution);
             Function factory = compileFactory(moduleId, source, scope);
             factory.call(context, scope, exports, new Object[]{
-                    new RequireFunction(this, moduleId, scope),
+                    new RequireFunction(this, moduleId, scope, retainResolvedModuleIds),
                     exports,
                     module
             });
@@ -116,12 +125,6 @@ public final class TypeScriptModuleRuntime {
             String moduleId,
             TypeScriptModuleRegistry.ModuleSource source,
             Scriptable scope) {
-        if (context instanceof RhinoModuleFactoryCompiler compiler) {
-            String factorySource = "function(require, exports, module) {\n" + source.body() + "\n}";
-            return compiler.compileModuleFactory(scope, factorySource, source.sourceName());
-        }
-
-        // Plain JVM tests instantiate Rhino without Mixin transformation.
         String factorySource = "(function(require, exports, module) {\n" + source.body() + "\n})";
         Object value = context.evaluateString(scope, factorySource, source.sourceName(), 1, null);
         if (value instanceof Function function) {
@@ -147,13 +150,20 @@ public final class TypeScriptModuleRuntime {
         private final TypeScriptModuleRuntime runtime;
         private final String requesterId;
         private final Scriptable moduleScope;
+        private final boolean retainResolvedModuleIds;
         private String lastSpecifier;
         private String lastResolvedModuleId;
+        private Map<String, String> resolvedModuleIds;
 
-        private RequireFunction(TypeScriptModuleRuntime runtime, String requesterId, Scriptable moduleScope) {
+        private RequireFunction(
+                TypeScriptModuleRuntime runtime,
+                String requesterId,
+                Scriptable moduleScope,
+                boolean retainResolvedModuleIds) {
             this.runtime = runtime;
             this.requesterId = requesterId;
             this.moduleScope = moduleScope;
+            this.retainResolvedModuleIds = retainResolvedModuleIds;
             setParentScope(moduleScope);
         }
 
@@ -168,8 +178,20 @@ public final class TypeScriptModuleRuntime {
             }
             String specifier = String.valueOf(args[0]);
             if (!specifier.equals(lastSpecifier)) {
-                // A module factory owns this function, so its latest successful request is safe to reuse.
-                String resolvedModuleId = runtime.resolveModuleId(specifier, requesterId);
+                String resolvedModuleId = !retainResolvedModuleIds || resolvedModuleIds == null
+                        ? null
+                        : resolvedModuleIds.get(specifier);
+                if (resolvedModuleId == null) {
+                    resolvedModuleId = runtime.resolveModuleId(specifier, requesterId);
+                }
+
+                // Keep the allocation-free single-specifier path while retaining prior successful lookups.
+                if (retainResolvedModuleIds && lastSpecifier != null) {
+                    if (resolvedModuleIds == null) {
+                        resolvedModuleIds = new HashMap<>();
+                    }
+                    resolvedModuleIds.put(lastSpecifier, lastResolvedModuleId);
+                }
                 lastSpecifier = specifier;
                 lastResolvedModuleId = resolvedModuleId;
             }

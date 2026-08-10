@@ -34,7 +34,9 @@ TS Modify 解决的是这个运行时兼容问题：让整合包或脚本开发�
 
 更详细的 TypeScript 兼容说明见 [docs/kubejs-typescript.md](docs/kubejs-typescript.md)。
 Rhino 模块运行时的压力测试与 JFR 采样说明见
-[docs/rhino-performance.md](docs/rhino-performance.md)。
+[docs/rhino-performance.md](docs/rhino-performance.md)，详细执行方案见
+[docs/rhino-performance-execution.md](docs/rhino-performance-execution.md)，实际
+Java 17 测量报告见 [docs/rhino-performance-report.md](docs/rhino-performance-report.md)。
 
 ### 项目级 TypeScript 转译工具
 
