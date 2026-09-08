@@ -55,6 +55,24 @@ class TypeScriptModuleRuntimeTest {
     }
 
     @Test
+    void loadsUnicodeNamedBindingsAndAliasesThroughRuntimeRequire() {
+        TypeScriptScriptDomain domain = domain("server");
+        register(domain, "test:unicode-helper.ts", """
+                const 值 = 41;
+                export { 值 };
+                """);
+        register(domain, "test:unicode-consumer.ts", """
+                import { 值 as v } from "./unicode-helper";
+                const a = v + 1;
+                export { a as 值 };
+                """);
+
+        Object value = exportedValue(domain, "test:unicode-consumer.ts", "值");
+
+        assertEquals(42, ((Number) value).intValue());
+    }
+
+    @Test
     void resolvesSharedScriptsFromServerAndClientDomains() {
         TypeScriptScriptDomain server = domain("server");
         TypeScriptScriptDomain client = domain("client");

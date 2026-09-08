@@ -11,6 +11,7 @@ anyhow = "1.0.102"
 base64 = "0.22.1"
 deno_ast = { version = "0.53.1", features = [
   "codegen",
+  "compat",
   "emit",
   "proposal",
   "react",

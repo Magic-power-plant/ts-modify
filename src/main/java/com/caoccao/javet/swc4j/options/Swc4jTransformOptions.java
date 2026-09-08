@@ -83,9 +83,10 @@ public class Swc4jTransformOptions extends Swc4jOptions {
      * <p>
      * This defaults to `EsVersion.Latest` because it preserves input as much as possible.
      * <p>
-     * Note: This does not verify if output is valid for the target runtime.
-     * e.g. `const foo = 1;` with [EsVersion::Es3] will emit as `const foo = 1` without verification.
-     * This is because it's not a concern of the code generator.
+     * Note: the generic emitter does not verify if output is valid for the target runtime.
+     * The local TS Modify WASM bridge additionally runs SWC's compatibility pass for
+     * ES3/ES5 targets before emitting, so those targets are lowered when this runtime
+     * is used. Other swc4j implementations may retain the emitter-only behavior.
      *
      * @since 0.5.0
      */

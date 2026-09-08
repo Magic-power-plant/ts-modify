@@ -32,7 +32,7 @@ TS Modify 解决的是这个运行时兼容问题：让整合包或脚本开发�
 - 在链式调用后接 TypeScript 类型断言的场景中补充分号保护，避免转译前后语义被错误拼接。
 - ProbeJS 生成声明时，如果某个 Mod 的泛型父类或接口引用了当前环境缺失的可选 API，会退回原始类型元数据继续生成，避免整次 dump 中断并保留 `Java.loadClass(...)` 已捕获类的声明。
 
-更详细的 TypeScript 兼容说明见 [docs/kubejs-typescript.md](docs/kubejs-typescript.md)。
+更详细的 TypeScript 兼容说明见 [docs/kubejs-typescript.md](docs/kubejs-typescript.md)。有关 SpongePowered Mixin 的通用工作原理、校验机制和安全边界见 [docs/mixin.md](docs/mixin.md)，KubeJS 方法钩子的用法和安全限制见 [docs/kubejs-mixin.md](docs/kubejs-mixin.md)。
 
 ### Rhino 脚本加载优化
 

@@ -31,7 +31,9 @@ KubeJS runtime mode also applies KubeJS-specific compatibility steps after SWC e
 - relative imports are supported inside the same script domain, such as `server_scripts` importing another `server_scripts` file
 - extensionless relative imports are recommended, for example `./global` instead of `./global.ts`, because TypeScript and IDE language services reject `.ts` specifiers unless `allowImportingTsExtensions` is enabled
 - `kubejs/shared_scripts` is available as shared source for server and client scripts; modules from that directory execute separately in each script context
-- output targets ES2015 / ES6 for KubeJS; newer syntax such as optional chaining is lowered, while ES6 syntax such as arrow functions and `const` / `let` is preserved
+- output targets ES5 for KubeJS Rhino; SWC's ES2015 compatibility pass lowers default parameters, arrow functions, block-scoped declarations, templates, destructuring, and related ES2015 syntax before the KubeJS-specific post-processing steps
+- ES2018 object rest and object spread are lowered before the ES2015 pass, so patterns such as `const { x, ...rest } = value` and literals such as `{ ...rest, x }` do not leave Rhino-incompatible `...` syntax behind
+- the ES5 target is implemented in the local Rust/WASM bridge, not by the Java emitter flag alone: the bridge runs SWC's compatibility pass inside the same `GLOBALS` / helper context used by SWC transforms
 
 KubeJS global bindings such as `ServerEvents`, `ItemEvents`, and `StartupEvents` remain visible inside modules. Use `export` / `import` for TypeScript modules, and use explicit assignments to shared objects such as `global` only when you intentionally want normal KubeJS global behavior.
 

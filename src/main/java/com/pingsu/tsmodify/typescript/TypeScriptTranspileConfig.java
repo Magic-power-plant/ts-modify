@@ -14,7 +14,7 @@ public final class TypeScriptTranspileConfig {
             .keepComments(true)
             .stripStaticModuleSyntax(true)
             .rewriteTypeScriptModuleSpecifiers(false)
-            .transformTarget(Swc4jEsVersion.ES2015)
+            .transformTarget(Swc4jEsVersion.ES5)
             .lowerRuntimeSyntax(true)
             .guardAutomaticSemicolonHazards(true)
             .isolateTopLevelNames(true)

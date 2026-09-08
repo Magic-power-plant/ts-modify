@@ -21,9 +21,12 @@ public final class TypeScriptCommonJsModuleTransformer {
     private static final Pattern BINDING_IMPORT = Pattern.compile(
             "^import\\s+(.+?)\\s+from\\s*(['\"])([^'\"]+)\\2\\s*;?\\s*$", Pattern.DOTALL);
     private static final Pattern EXPORT_FROM = Pattern.compile(
-            "^export\\s*\\{(.+)}\\s+from\\s*(['\"])([^'\"]+)\\2\\s*;?\\s*$", Pattern.DOTALL);
+            "^export\\s*\\{(.*)}\\s+from\\s*(['\"])([^'\"]+)\\2\\s*;?\\s*$", Pattern.DOTALL);
     private static final Pattern EXPORT_STAR = Pattern.compile(
             "^export\\s*\\*\\s+from\\s*(['\"])([^'\"]+)\\1\\s*;?\\s*$", Pattern.DOTALL);
+    private static final Pattern EXPORT_NAMESPACE_FROM = Pattern.compile(
+            "^export\\s*\\*\\s+as\\s+([A-Za-z_$][\\w$]*)\\s+from\\s*(['\"])([^'\"]+)\\2\\s*;?\\s*$",
+            Pattern.DOTALL);
     private static final Pattern EXPORT_LIST = Pattern.compile(
             "^export\\s*\\{(.*)}\\s*;?\\s*$", Pattern.DOTALL);
 
@@ -56,6 +59,7 @@ public final class TypeScriptCommonJsModuleTransformer {
             return source;
         }
 
+        validateReplacements(source, replacements);
         StringBuilder out = new StringBuilder(source);
         replacements.stream()
                 .sorted(Comparator.comparingInt(Replacement::start).reversed())
@@ -84,16 +88,16 @@ public final class TypeScriptCommonJsModuleTransformer {
         if (comma >= 0) {
             String first = clause.substring(0, comma).trim();
             String second = clause.substring(comma + 1).trim();
-            lines.add("const " + moduleVariable + " = require(\"" + specifier + "\");");
+            lines.add("var " + moduleVariable + " = require(\"" + specifier + "\");");
             if (!first.isEmpty()) {
-                lines.add("const " + first + " = " + defaultAccess(moduleVariable) + ";");
+                lines.add("var " + first + " = " + defaultAccess(moduleVariable) + ";");
             }
             appendImportBinding(lines, second, moduleVariable);
         } else if (clause.startsWith("{") || clause.startsWith("*")) {
-            lines.add("const " + moduleVariable + " = require(\"" + specifier + "\");");
+            lines.add("var " + moduleVariable + " = require(\"" + specifier + "\");");
             appendImportBinding(lines, clause, moduleVariable);
         } else {
-            lines.add("const " + clause + " = " + defaultAccess("require(\"" + specifier + "\")") + ";");
+            lines.add("var " + clause + " = " + defaultAccess("require(\"" + specifier + "\")") + ";");
         }
 
         return String.join("\n", lines) + "\n";
@@ -104,12 +108,17 @@ public final class TypeScriptCommonJsModuleTransformer {
         if (trimmed.startsWith("{")) {
             String body = trimmed.substring(1, trimmed.lastIndexOf('}')).trim();
             if (!body.isEmpty()) {
-                lines.add("const {" + importDestructuring(body) + "} = " + moduleVariable + ";");
+                for (String part : splitTopLevel(body, ',')) {
+                    String[] names = splitAlias(part);
+                    if (names != null) {
+                        lines.add("var " + names[1] + " = " + moduleVariable + "." + names[0] + ";");
+                    }
+                }
             }
         } else if (trimmed.startsWith("*")) {
             Matcher matcher = Pattern.compile("^\\*\\s+as\\s+([A-Za-z_$][\\w$]*)$").matcher(trimmed);
             if (matcher.matches()) {
-                lines.add("const " + matcher.group(1) + " = " + moduleVariable + ";");
+                lines.add("var " + matcher.group(1) + " = " + moduleVariable + ";");
             }
         }
     }
@@ -124,11 +133,22 @@ public final class TypeScriptCommonJsModuleTransformer {
         String statement = source.substring(start, end);
         String trimmed = statement.trim();
 
+        Matcher exportNamespaceFrom = EXPORT_NAMESPACE_FROM.matcher(trimmed);
+        if (exportNamespaceFrom.matches()) {
+            String exportName = exportNamespaceFrom.group(1);
+            String specifier = escape(exportNamespaceFrom.group(3));
+            String moduleVariable = "__tsmodify_module_" + temporaryIndex++;
+            replacements.add(new Replacement(start, end,
+                    "var " + moduleVariable + " = require(\"" + specifier + "\");\n"
+                            + "exports." + exportName + " = " + moduleVariable + ";\n"));
+            return temporaryIndex;
+        }
+
         Matcher exportStar = EXPORT_STAR.matcher(trimmed);
         if (exportStar.matches()) {
             String specifier = escape(exportStar.group(2));
             replacements.add(new Replacement(start, end,
-                    "(function(module) { for (var key in module) { if (key !== \"default\" && key !== \"__esModule\") { exports[key] = module[key]; } } })(require(\""
+                    "(function(module) { for (var key in module) { if (Object.prototype.hasOwnProperty.call(module, key) && key !== \"default\" && key !== \"__esModule\") { exports[key] = module[key]; } } })(require(\""
                             + specifier + "\"));\n"));
             return temporaryIndex;
         }
@@ -138,7 +158,7 @@ public final class TypeScriptCommonJsModuleTransformer {
             String body = exportFrom.group(1).trim();
             String specifier = escape(exportFrom.group(3));
             String moduleVariable = "__tsmodify_module_" + temporaryIndex++;
-            StringBuilder replacement = new StringBuilder("const ")
+            StringBuilder replacement = new StringBuilder("var ")
                     .append(moduleVariable)
                     .append(" = require(\"")
                     .append(specifier)
@@ -158,7 +178,7 @@ public final class TypeScriptCommonJsModuleTransformer {
 
         int cursor = skipWhitespace(mask, start + "export".length());
         if (matchesKeyword(mask, cursor, "default")) {
-            transformDefaultExport(source, mask, replacements, start, cursor, end);
+            replacements.add(new Replacement(start, end, transformDefaultExport(source, mask, cursor, end)));
             return temporaryIndex;
         }
 
@@ -167,60 +187,76 @@ public final class TypeScriptCommonJsModuleTransformer {
                 || matchesKeyword(mask, cursor, "var")) {
             String declarationKind = readKeyword(mask, cursor);
             List<String> names = collectVariableNames(mask, cursor + declarationKind.length(), end);
-            replacements.add(new Replacement(start, cursor, ""));
-            replacements.add(new Replacement(end, end, exportAssignments(names)));
-        } else if (matchesKeyword(mask, cursor, "function") || matchesKeyword(mask, cursor, "class")) {
-            String keyword = matchesKeyword(mask, cursor, "function") ? "function" : "class";
-            int nameStart = skipWhitespace(mask, cursor + keyword.length());
-            int nameEnd = readIdentifier(mask, nameStart);
-            if (nameEnd > nameStart) {
-                String name = new String(mask, nameStart, nameEnd - nameStart);
-                replacements.add(new Replacement(start, cursor, ""));
-                replacements.add(new Replacement(end, end, "\nexports." + name + " = " + name + ";\n"));
+            StringBuilder replacement = new StringBuilder(source.substring(cursor, end));
+            appendExportAssignments(replacement, names);
+            replacements.add(new Replacement(start, end, replacement.toString()));
+        } else {
+            int declarationStart = cursor;
+            if (matchesKeyword(mask, cursor, "async")) {
+                cursor = skipWhitespace(mask, cursor + "async".length());
+            }
+            if (matchesKeyword(mask, cursor, "function") || matchesKeyword(mask, cursor, "class")) {
+                String keyword = matchesKeyword(mask, cursor, "function") ? "function" : "class";
+                int nameStart = skipWhitespace(mask, cursor + keyword.length());
+                if (keyword.equals("function") && nameStart < mask.length && mask[nameStart] == '*') {
+                    nameStart = skipWhitespace(mask, nameStart + 1);
+                }
+                int nameEnd = readIdentifier(mask, nameStart);
+                if (nameEnd > nameStart) {
+                    String name = new String(mask, nameStart, nameEnd - nameStart);
+                    StringBuilder replacement = new StringBuilder(source.substring(declarationStart, end));
+                    appendExportAssignment(replacement, name, name);
+                    replacements.add(new Replacement(start, end, replacement.toString()));
+                } else {
+                    throw unsupportedExport(trimmed);
+                }
+            } else {
+                throw unsupportedExport(trimmed);
             }
         }
 
         return temporaryIndex;
     }
 
-    private static void transformDefaultExport(
+    private static String transformDefaultExport(
             String source,
             char[] mask,
-            List<Replacement> replacements,
-            int exportStart,
             int defaultStart,
             int end) {
         int valueStart = skipWhitespace(mask, defaultStart + "default".length());
+        int declarationStart = valueStart;
+        if (matchesKeyword(mask, valueStart, "async")) {
+            int afterAsync = skipWhitespace(mask, valueStart + "async".length());
+            if (matchesKeyword(mask, afterAsync, "function")) {
+                valueStart = afterAsync;
+            }
+        }
         if (matchesKeyword(mask, valueStart, "function") || matchesKeyword(mask, valueStart, "class")) {
             String keyword = matchesKeyword(mask, valueStart, "function") ? "function" : "class";
             int nameStart = skipWhitespace(mask, valueStart + keyword.length());
+            if (keyword.equals("function") && nameStart < mask.length && mask[nameStart] == '*') {
+                nameStart = skipWhitespace(mask, nameStart + 1);
+            }
             int nameEnd = readIdentifier(mask, nameStart);
             if (nameEnd > nameStart) {
                 String name = new String(mask, nameStart, nameEnd - nameStart);
-                replacements.add(new Replacement(exportStart, valueStart, ""));
-                replacements.add(new Replacement(end, end, "\nexports.default = " + name + ";\n"));
+                StringBuilder replacement = new StringBuilder(source.substring(declarationStart, end));
+                appendExportAssignment(replacement, "default", name);
+                return replacement.toString();
             } else {
-                replacements.add(new Replacement(exportStart, valueStart, "exports.default = "));
+                String expression = source.substring(declarationStart, end).trim();
+                if (expression.endsWith(";")) {
+                    expression = expression.substring(0, expression.length() - 1);
+                }
+                return "exports.default = " + expression + ";\n";
             }
-            return;
         }
 
         String expression = source.substring(valueStart, end).trim();
         if (expression.endsWith(";")) {
             expression = expression.substring(0, expression.length() - 1);
         }
-        replacements.add(new Replacement(exportStart, end, "exports.default = " + expression + ";\n"));
-    }
-
-    private static String importDestructuring(String body) {
-        List<String> entries = new ArrayList<>();
-        for (String part : splitTopLevel(body, ',')) {
-            String specifier = normalizeSpecifier(part);
-            if (!specifier.isEmpty()) {
-                entries.add(specifier);
-            }
-        }
-        return String.join(", ", entries);
+        return "exports.default = " + expression + ";\n";
     }
 
     private static void appendExportAssignments(StringBuilder out, String body, String moduleVariable) {
@@ -233,17 +269,25 @@ public final class TypeScriptCommonJsModuleTransformer {
                 continue;
             }
             String[] names = splitAlias(trimmed);
+            if (names == null) {
+                continue;
+            }
             String source = moduleVariable == null ? names[0] : moduleVariable + "." + names[0];
             out.append("exports.").append(names[1]).append(" = ").append(source).append(";\n");
         }
     }
 
-    private static String exportAssignments(List<String> names) {
-        StringBuilder out = new StringBuilder();
+    private static void appendExportAssignments(StringBuilder out, List<String> names) {
         for (String name : names) {
-            out.append("\nexports.").append(name).append(" = ").append(name).append(";");
+            appendExportAssignment(out, name, name);
         }
-        return out.append('\n').toString();
+    }
+
+    private static void appendExportAssignment(StringBuilder out, String exportName, String localName) {
+        if (out.length() > 0 && out.charAt(out.length() - 1) != '\n') {
+            out.append('\n');
+        }
+        out.append("exports.").append(exportName).append(" = ").append(localName).append(";\n");
     }
 
     private static List<String> collectVariableNames(char[] mask, int start, int end) {
@@ -295,21 +339,43 @@ public final class TypeScriptCommonJsModuleTransformer {
         return TypeScriptSourceScanner.findTopLevel(value, ',');
     }
 
-    private static String normalizeSpecifier(String part) {
-        String[] names = splitAlias(part.trim());
-        if (names[0].equals(names[1])) {
-            return names[0];
+    private static String[] splitAlias(String value) {
+        String normalized = maskBindingTrivia(value);
+        if (normalized.isEmpty()) {
+            return null;
         }
-        return names[0] + ": " + names[1];
+        if (normalized.startsWith("type ")) {
+            return null;
+        }
+        char[] binding = normalized.toCharArray();
+        int sourceEnd = readIdentifier(binding, 0);
+        if (sourceEnd == 0) {
+            throw unsupportedBinding(value);
+        }
+        String sourceName = normalized.substring(0, sourceEnd);
+        int cursor = skipWhitespace(binding, sourceEnd);
+        if (cursor == binding.length) {
+            return new String[]{sourceName, sourceName};
+        }
+        if (!matchesKeyword(binding, cursor, "as")) {
+            throw unsupportedBinding(value);
+        }
+        cursor = skipWhitespace(binding, cursor + "as".length());
+        int exportEnd = readIdentifier(binding, cursor);
+        if (exportEnd == cursor || skipWhitespace(binding, exportEnd) != binding.length) {
+            throw unsupportedBinding(value);
+        }
+        return new String[]{sourceName, normalized.substring(cursor, exportEnd)};
     }
 
-    private static String[] splitAlias(String value) {
-        String normalized = value.replaceFirst("^type\\s+", "").trim();
-        Matcher matcher = Pattern.compile("^([A-Za-z_$][\\w$]*|default)\\s+as\\s+([A-Za-z_$][\\w$]*)$").matcher(normalized);
-        if (matcher.matches()) {
-            return new String[]{matcher.group(1), matcher.group(2)};
+    private static String maskBindingTrivia(String value) {
+        char[] mask = maskCode(value);
+        StringBuilder out = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char c = mask[i];
+            out.append(c == ' ' ? ' ' : value.charAt(i));
         }
-        return new String[]{normalized, normalized};
+        return out.toString().replaceAll("\\s+", " ").trim();
     }
 
     private static String readKeyword(char[] mask, int start) {
@@ -324,6 +390,57 @@ public final class TypeScriptCommonJsModuleTransformer {
 
     private static String escape(String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static IllegalArgumentException unsupportedExport(String statement) {
+        return new IllegalArgumentException("Unsupported TypeScript export statement: " + statement);
+    }
+
+    private static IllegalArgumentException unsupportedBinding(String binding) {
+        return new IllegalArgumentException("Unsupported export binding '" + binding + "'");
+    }
+
+    private static void validateReplacements(String source, List<Replacement> replacements) {
+        for (Replacement replacement : replacements) {
+            if (replacement.start() < 0 || replacement.end() < replacement.start() || replacement.end() > source.length()) {
+                throw new IllegalStateException("Invalid TypeScript module replacement range ["
+                        + replacement.start() + ", " + replacement.end() + "] for source length " + source.length());
+            }
+        }
+
+        for (int i = 0; i < replacements.size(); i++) {
+            Replacement left = replacements.get(i);
+            for (int j = i + 1; j < replacements.size(); j++) {
+                Replacement right = replacements.get(j);
+                if (rangesOverlap(left, right)
+                        || (isInsertion(left) && isPointInside(right, left.start()))
+                        || (isInsertion(right) && isPointInside(left, right.start()))) {
+                    throw new IllegalStateException("Overlapping TypeScript module replacements: "
+                            + left + " and " + right);
+                }
+            }
+        }
+    }
+
+    private static boolean rangesOverlap(Replacement left, Replacement right) {
+        if (isInsertion(left) && isInsertion(right)) {
+            return left.start() == right.start();
+        }
+        if (isInsertion(left)) {
+            return false;
+        }
+        if (isInsertion(right)) {
+            return false;
+        }
+        return left.start() < right.end() && right.start() < left.end();
+    }
+
+    private static boolean isInsertion(Replacement replacement) {
+        return replacement.start() == replacement.end();
+    }
+
+    private static boolean isPointInside(Replacement replacement, int point) {
+        return !isInsertion(replacement) && point >= replacement.start() && point < replacement.end();
     }
 
     private record Replacement(int start, int end, String value) {

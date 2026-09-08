@@ -1,12 +1,17 @@
 use anyhow::{Error, Result};
 use base64::Engine;
-use deno_ast::swc::ast::EsVersion;
+use deno_ast::swc::ast::{
+    AssignExpr, AssignOp, AssignTarget, BlockStmt, Decl, EsVersion, Expr, ExprStmt, ForStmt,
+    ModuleItem, Program, Stmt, VarDecl, VarDeclKind, VarDeclOrExpr,
+};
 use deno_ast::swc::codegen::{text_writer::JsWriter, Config, Emitter};
 use deno_ast::swc::common::{sync::Lrc, BytePos, FileName, FilePathMapping, LineCol, SourceMap};
+use deno_ast::swc::ecma_visit::{noop_visit_mut_type, visit_mut_pass, VisitMut, VisitMutWith};
 use deno_ast::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::alloc::{alloc, dealloc, Layout};
+use std::mem;
 use std::slice;
 use std::str;
 
@@ -194,7 +199,9 @@ impl From<TranspileOptionsRequest> for TranspileOptions {
             capture_comments: value.capture_comments,
             capture_tokens: value.capture_tokens,
             decorators: decorators(value.decorators),
-            imports_not_used_as_values: imports_not_used_as_values(value.imports_not_used_as_values),
+            imports_not_used_as_values: imports_not_used_as_values(
+                value.imports_not_used_as_values,
+            ),
             inline_sources: value.inline_sources,
             jsx: value.jsx.map(jsx_runtime),
             keep_comments: value.keep_comments,
@@ -341,6 +348,38 @@ fn transform(code: String, options: &TransformOptions) -> Result<TransformOutput
     let source_map = Lrc::new(SourceMap::new(FilePathMapping::empty()));
     let filename = Lrc::new(FileName::Url(specifier));
     source_map.new_source_file(filename, code);
+    let mut program = parsed_source.program().as_ref().clone();
+    let swc_comments = parsed_source.comments().as_single_threaded();
+    if matches!(options.target, EsVersion::Es3 | EsVersion::Es5) {
+        // The code generator's target controls syntax validation only. Apply
+        // SWC's compatibility pass explicitly so ES5 really means ES5.
+        let marks = parsed_source.globals().marks();
+        let unresolved_mark = marks.unresolved;
+        let top_level_mark = marks.top_level;
+        program = parsed_source.globals().with(|_| {
+            deno_ast::swc::transforms::helpers::HELPERS.set(
+                &deno_ast::swc::transforms::helpers::Helpers::new(false),
+                || {
+                    program.apply((
+                        deno_ast::swc::transforms::resolver(unresolved_mark, top_level_mark, false),
+                        deno_ast::swc::transforms::compat::es2018::object_rest_spread(
+                            Default::default(),
+                        ),
+                        deno_ast::swc::transforms::compat::es2015::es2015(
+                            unresolved_mark,
+                            Some(swc_comments.clone()),
+                            Default::default(),
+                        ),
+                        deno_ast::swc::transforms::helpers::inject_helpers(top_level_mark),
+                        deno_ast::swc::transforms::hygiene::hygiene(),
+                        visit_mut_pass(SplitForVarDeclarations),
+                        deno_ast::swc::transforms::fixer::fixer(Some(&swc_comments)),
+                    ))
+                },
+            )
+        });
+    }
+
     let mut buffer = Vec::new();
     let mut source_map_buffer = Vec::new();
     let mut writer = Box::new(JsWriter::new(
@@ -356,7 +395,6 @@ fn transform(code: String, options: &TransformOptions) -> Result<TransformOutput
         .with_omit_last_semi(options.omit_last_semi)
         .with_target(options.target)
         .with_emit_assert_for_import_attributes(options.emit_assert_for_import_attributes);
-    let swc_comments = parsed_source.comments().as_single_threaded();
     let mut emitter = Emitter {
         cfg: config,
         comments: if options.keep_comments {
@@ -367,9 +405,9 @@ fn transform(code: String, options: &TransformOptions) -> Result<TransformOutput
         cm: source_map.clone(),
         wr: writer,
     };
-    match parsed_source.program_ref() {
-        ProgramRef::Module(module) => emitter.emit_module(module)?,
-        ProgramRef::Script(script) => emitter.emit_script(script)?,
+    match &program {
+        Program::Module(module) => emitter.emit_module(module)?,
+        Program::Script(script) => emitter.emit_script(script)?,
     };
     let mut code = String::from_utf8(buffer).map_err(Error::msg)?;
     if options.omit_last_semi && code.ends_with(';') {
@@ -388,6 +426,208 @@ fn transform(code: String, options: &TransformOptions) -> Result<TransformOutput
         parse_mode: parsed_parse_mode(&parsed_source),
         source_map,
     })
+}
+
+/// Rhino 1.20's embedded interpreter mishandles comma-separated `var`
+/// declarations in a `for` initializer (the second binding is not visible
+/// when the loop body runs). SWC emits this form for rest/spread helpers.
+/// Split the declaration into ordinary statements while retaining `var`
+/// function scoping and initializer order.
+struct SplitForVarDeclarations;
+
+struct ForVarDeclarationSplit {
+    declaration: Box<VarDecl>,
+    assignment_targets: Vec<Option<AssignTarget>>,
+}
+
+impl VisitMut for SplitForVarDeclarations {
+    noop_visit_mut_type!();
+
+    fn visit_mut_module_items(&mut self, module_items: &mut Vec<ModuleItem>) {
+        module_items.visit_mut_children_with(self);
+        let mut rewritten = Vec::with_capacity(module_items.len());
+        for module_item in mem::take(module_items) {
+            let ModuleItem::Stmt(mut statement) = module_item else {
+                rewritten.push(module_item);
+                continue;
+            };
+            rewritten.extend(
+                Self::rewrite_nested_single_statement_bodies(&mut statement)
+                    .into_iter()
+                    .map(ModuleItem::Stmt),
+            );
+            if let Some(split) = Self::take_for_var_declarations(&mut statement) {
+                rewritten.extend(
+                    split
+                        .into_declaration_statements()
+                        .into_iter()
+                        .map(ModuleItem::Stmt),
+                );
+            }
+            rewritten.push(ModuleItem::Stmt(statement));
+        }
+        *module_items = rewritten;
+    }
+
+    fn visit_mut_stmts(&mut self, statements: &mut Vec<Stmt>) {
+        statements.visit_mut_children_with(self);
+        let mut rewritten = Vec::with_capacity(statements.len());
+        for mut statement in mem::take(statements) {
+            rewritten.extend(Self::rewrite_nested_single_statement_bodies(&mut statement));
+            if let Some(split) = Self::take_for_var_declarations(&mut statement) {
+                rewritten.extend(split.into_declaration_statements());
+            }
+            rewritten.push(statement);
+        }
+        *statements = rewritten;
+    }
+}
+
+impl SplitForVarDeclarations {
+    fn take_for_var_declarations(statement: &mut Stmt) -> Option<ForVarDeclarationSplit> {
+        let for_stmt = Self::for_statement_mut(statement)?;
+        let Some(VarDeclOrExpr::VarDecl(var_decl)) = for_stmt.init.as_ref() else {
+            return None;
+        };
+        if var_decl.kind != VarDeclKind::Var || var_decl.decls.len() < 2 {
+            return None;
+        }
+        let assignment_targets: Option<Vec<Option<AssignTarget>>> = var_decl
+            .decls
+            .iter()
+            .map(|declarator| {
+                if declarator.init.is_some() {
+                    AssignTarget::try_from(declarator.name.clone())
+                        .ok()
+                        .map(Some)
+                } else {
+                    Some(None)
+                }
+            })
+            .collect();
+        let assignment_targets = assignment_targets?;
+        let Some(VarDeclOrExpr::VarDecl(var_decl)) = for_stmt.init.take() else {
+            return None;
+        };
+        Some(ForVarDeclarationSplit {
+            declaration: var_decl,
+            assignment_targets,
+        })
+    }
+
+    fn rewrite_nested_single_statement_bodies(statement: &mut Stmt) -> Vec<Stmt> {
+        if let Some(for_stmt) = Self::for_statement_mut(statement) {
+            return Self::rewrite_single_statement(&mut for_stmt.body);
+        }
+        match statement {
+            Stmt::If(if_stmt) => {
+                let mut declarations = Self::rewrite_single_statement(&mut if_stmt.cons);
+                if let Some(alternate) = &mut if_stmt.alt {
+                    declarations.extend(Self::rewrite_single_statement(alternate));
+                }
+                declarations
+            }
+            Stmt::While(while_stmt) => Self::rewrite_single_statement(&mut while_stmt.body),
+            Stmt::DoWhile(do_while_stmt) => Self::rewrite_single_statement(&mut do_while_stmt.body),
+            Stmt::ForIn(for_in_stmt) => Self::rewrite_single_statement(&mut for_in_stmt.body),
+            Stmt::ForOf(for_of_stmt) => Self::rewrite_single_statement(&mut for_of_stmt.body),
+            Stmt::With(with_stmt) => Self::rewrite_single_statement(&mut with_stmt.body),
+            Stmt::Labeled(labeled_stmt) => Self::rewrite_single_statement(&mut labeled_stmt.body),
+            _ => Vec::new(),
+        }
+    }
+
+    fn rewrite_single_statement(statement: &mut Box<Stmt>) -> Vec<Stmt> {
+        let is_for_statement = Self::for_statement_mut(statement).is_some();
+        let mut hoisted_declarations = Self::for_statement_mut(statement)
+            .map(|for_stmt| Self::rewrite_single_statement(&mut for_stmt.body))
+            .unwrap_or_default();
+        let Some(split) = Self::take_for_var_declarations(statement) else {
+            if !is_for_statement {
+                hoisted_declarations
+                    .extend(Self::rewrite_nested_single_statement_bodies(statement));
+            }
+            return hoisted_declarations;
+        };
+        let span = split.declaration.span;
+        let (declarations, mut initializers) = split.into_hoisted_declarations_and_initializers();
+        hoisted_declarations.extend(declarations);
+        let original_statement = mem::take(statement);
+        initializers.push(*original_statement);
+        *statement = Box::new(Stmt::Block(BlockStmt {
+            span,
+            ctxt: Default::default(),
+            stmts: initializers,
+        }));
+        hoisted_declarations
+    }
+
+    fn for_statement_mut(statement: &mut Stmt) -> Option<&mut ForStmt> {
+        match statement {
+            Stmt::For(for_stmt) => Some(for_stmt),
+            Stmt::Labeled(labeled_stmt) => Self::for_statement_mut(&mut labeled_stmt.body),
+            _ => None,
+        }
+    }
+}
+
+impl ForVarDeclarationSplit {
+    fn into_declaration_statements(self) -> Vec<Stmt> {
+        let VarDecl {
+            span,
+            ctxt,
+            kind,
+            declare,
+            decls,
+        } = *self.declaration;
+        decls
+            .into_iter()
+            .map(|declarator| {
+                Stmt::Decl(Decl::Var(Box::new(VarDecl {
+                    span,
+                    ctxt,
+                    kind,
+                    declare,
+                    decls: vec![declarator],
+                })))
+            })
+            .collect()
+    }
+
+    fn into_hoisted_declarations_and_initializers(self) -> (Vec<Stmt>, Vec<Stmt>) {
+        let VarDecl {
+            span,
+            ctxt,
+            kind,
+            declare,
+            decls,
+        } = *self.declaration;
+        let mut declarations = Vec::with_capacity(decls.len());
+        let mut initializers = Vec::with_capacity(decls.len());
+        for (mut declarator, assignment_target) in decls.into_iter().zip(self.assignment_targets) {
+            let initializer = declarator.init.take();
+            let declarator_span = declarator.span;
+            declarations.push(Stmt::Decl(Decl::Var(Box::new(VarDecl {
+                span,
+                ctxt,
+                kind,
+                declare,
+                decls: vec![declarator],
+            }))));
+            if let (Some(left), Some(right)) = (assignment_target, initializer) {
+                initializers.push(Stmt::Expr(ExprStmt {
+                    span: declarator_span,
+                    expr: Box::new(Expr::Assign(AssignExpr {
+                        span: declarator_span,
+                        op: AssignOp::Assign,
+                        left,
+                        right,
+                    })),
+                }));
+            }
+        }
+        (declarations, initializers)
+    }
 }
 
 fn transpile(code: String, options: &TranspileOptions) -> Result<TranspileOutput> {

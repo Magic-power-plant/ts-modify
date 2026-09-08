@@ -1,6 +1,8 @@
 package com.pingsu.tsmodify.kubejs;
 
 import com.pingsu.tsmodify.kubejs.fluid.FluidIngredientJS;
+import com.pingsu.tsmodify.kubejs.mixin.KubeJsMixinApi;
+import com.pingsu.tsmodify.kubejs.mixin.KubeJsMixinRuleRegistry;
 import com.pingsu.tsmodify.typescript.module.TypeScriptScriptDirectories;
 import com.pingsu.tsmodify.typescript.module.TypeScriptModuleRegistry;
 import com.pingsu.tsmodify.typescript.module.TypeScriptModuleRuntime;
@@ -25,10 +27,12 @@ public class TsmodifyKubeJSPlugin extends KubeJSPlugin {
     public void registerBindings(BindingsEvent event) {
         event.add("FluidIngredient", FluidIngredientJS.class);
         event.add("__tsmodify_modules", new TypeScriptModuleRuntime(event.manager));
+        event.add("KubeJSMixin", new KubeJsMixinApi(event.manager));
     }
 
     @Override
     public void clearCaches() {
         TypeScriptModuleRegistry.clear();
+        KubeJsMixinRuleRegistry.clear();
     }
 }

@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.caoccao.javet.swc4j.enums.Swc4jEsVersion;
+import dev.latvian.mods.rhino.Context;
+import dev.latvian.mods.rhino.Scriptable;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -37,6 +39,10 @@ class TypeScriptTranspilerTest {
                   event.server?.tell?.(message);
                 }
 
+                function withDefault(anchor: string, enabled = true): string {
+                  return anchor + enabled;
+                }
+
                 ServerEvents.recipes(event => addRecipe(event));
                 """;
 
@@ -54,15 +60,16 @@ class TypeScriptTranspilerTest {
         assertFalse(code.contains("export {};"));
         assertFalse(code.contains("satisfies"));
         assertFalse(code.contains(": RecipeEvent"));
-        assertTrue(code.contains("=>"));
+        assertFalse(code.contains("=>"), code);
+        assertFalse(code.contains("enabled = true"), code);
         assertFalse(code.contains("?."));
         assertFalse(code.contains("const fileLocal"));
-        assertTrue(code.contains("const __tsmodify_"));
+        assertTrue(code.contains("var __tsmodify_"), code);
         assertTrue(code.contains("== null ? undefined"));
         assertTrue(code.contains("ServerEvents.recipes"));
         assertTrue(code.contains("__tsmodify_"));
         assertTrue(code.contains("addRecipe"));
-        assertEquals(Swc4jEsVersion.ES2015, TypeScriptTranspileConfig.KUBEJS.transformTarget());
+        assertEquals(Swc4jEsVersion.ES5, TypeScriptTranspileConfig.KUBEJS.transformTarget());
     }
 
     @Test
@@ -110,6 +117,154 @@ class TypeScriptTranspilerTest {
         assertTrue(code.contains("require(\"./global\")"));
         assertTrue(code.contains("exports.value = value"));
         assertTrue(code.contains("sharedItems"));
+    }
+
+    @Test
+    void kubejsModuleBodyHandlesAdjacentNamedExportsAndAliasesAtEndOfFile() {
+        String source = "export function foo(value: number) { return value + 1; }\n"
+                + "const g = 2;\n"
+                + "export { g as answer };";
+
+        String code = TypeScriptTranspiler.transpileKubeJsModuleBody("server_scripts/exports.ts", source).code();
+
+        assertTrue(code.contains("exports.foo = foo;"), code);
+        assertTrue(code.contains("exports.answer = g;"), code);
+        assertFalse(code.contains("export "), code);
+        assertFalse(code.contains("\n= foo;"), code);
+    }
+
+    @Test
+    void kubejsModuleBodyHandlesReExportsAndEmptyExports() {
+        String source = "export {}\nexport { value as renamed } from \"./dependency\"\nexport * from \"./other\"\n";
+
+        String code = TypeScriptTranspiler.transpileKubeJsModuleBody("server_scripts/barrel.ts", source).code();
+
+        assertFalse(code.contains("export "), code);
+        assertTrue(code.contains("require(\"./dependency\")"), code);
+        assertTrue(code.contains("exports.renamed"), code);
+        assertTrue(code.contains("require(\"./other\")"), code);
+    }
+
+    @Test
+    void kubejsModuleBodyAcceptsUnicodeImportAndExportBindings() {
+        String source = """
+                import { 值 as v } from "./dependency";
+                const 本地 = v;
+                const a = v;
+                export { 本地 };
+                export { a as 值 };
+                """;
+
+        String code = TypeScriptTranspiler.transpileKubeJsModuleBody(
+                "server_scripts/unicode-bindings.ts",
+                source).code();
+
+        assertTrue(code.contains("var v = __tsmodify_module_0.值;"), code);
+        assertTrue(code.contains("exports.本地 = 本地;"), code);
+        assertTrue(code.contains("exports.值 = a;"), code);
+        assertFalse(code.contains("import "), code);
+        assertFalse(code.contains("export "), code);
+    }
+
+    @Test
+    void kubejsModeLowersCommonEs2015SyntaxForRhino() {
+        String source = """
+                const values = [1, 2];
+                const copy = [...values];
+                const isArray = values instanceof Array;
+                const record = { values };
+                const { values: first } = record;
+                function describe(value = `value:${first}`, ...rest) {
+                  return `${value}:${rest.length}`;
+                }
+                const add = (left: number, right: number) => left + right;
+                """;
+
+        String code = TypeScriptTranspiler.transpileSource(
+                "server_scripts/es2015.ts",
+                source,
+                TypeScriptTranspileConfig.KUBEJS.toBuilder()
+                        .isolateTopLevelNames(false)
+                        .build()).code();
+
+        assertFalse(code.contains("const "), code);
+        assertFalse(code.contains("let "), code);
+        assertFalse(code.contains("=>"), code);
+        assertFalse(code.contains("..."), code);
+        assertFalse(code.contains("`"), code);
+        assertFalse(code.contains("function describe(value ="), code);
+        assertTrue(code.contains("arguments"), code);
+        assertTrue(code.contains("function _instanceof"), code);
+        Context context = Context.enter();
+        Scriptable scope = context.initStandardObjects();
+        Object isArray = context.evaluateString(scope, code + "\n isArray;", "es2015.ts", 1, null);
+        assertEquals(Boolean.TRUE, isArray);
+    }
+
+    @Test
+    void kubejsModeLowersObjectRestAndSpreadBeforeEs2015ForRhino() {
+        String source = """
+                const source = { x: 1, y: 2, z: 3 };
+                const { x, ...rest } = source;
+                const merged = { ...rest, z: 4 };
+                const result = x + ":" + rest.y + ":" + merged.z;
+                """;
+
+        String code = TypeScriptTranspiler.transpileSource(
+                "server_scripts/object-rest-spread.ts",
+                source,
+                TypeScriptTranspileConfig.KUBEJS.toBuilder()
+                        .isolateTopLevelNames(false)
+                        .build()).code();
+
+        assertFalse(code.contains("..."), code);
+        Context context = Context.enter();
+        Scriptable scope = context.initStandardObjects();
+        Object result = context.evaluateString(
+                scope,
+                code + "\nresult;",
+                "object-rest-spread.ts",
+                1,
+                null);
+        assertEquals("1:2:4", result);
+    }
+
+    @Test
+    void kubejsModeSplitsForVarDeclarationsInsideSingleStatementBodies() {
+        String source = """
+                var result = "";
+                var initializerCalls = 0;
+                if (false)
+                  for (var skipped = ++initializerCalls, alsoSkipped = ++initializerCalls; false;) {
+                  }
+                if (true)
+                  for (var a = 0, b = 3; a < 3; a++) {
+                    b += a;
+                  }
+                result = b + ":" + initializerCalls;
+                """;
+
+        String code = TypeScriptTranspiler.transpileSource(
+                "server_scripts/nested-for-var.ts",
+                source,
+                TypeScriptTranspileConfig.KUBEJS.toBuilder()
+                        .isolateTopLevelNames(false)
+                        .build()).code();
+
+        assertTrue(code.contains("var a;"), code);
+        assertTrue(code.contains("var b;"), code);
+        assertTrue(code.contains("a = 0;"), code);
+        assertTrue(code.contains("b = 3;"), code);
+        assertFalse(code.contains("for(var a = 0, b = 3"), code);
+        Context context = Context.enter();
+        Scriptable scope = context.initStandardObjects();
+        Object result = context.evaluateString(
+                scope,
+                code + "\nresult;",
+                "nested-for-var.ts",
+                1,
+                null);
+        assertEquals("6:0", result);
     }
 
     @Test
