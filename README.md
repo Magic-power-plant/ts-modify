@@ -76,6 +76,26 @@ TypeScriptProjectTranspiler <sourceRoot> <outputRoot> [--continue]
 const waterLike = FluidIngredient.tag("#minecraft:water", 1000)
 ```
 
+### Java 基本类型工具
+
+JavaScript 只有一个 `number` 类型，调用存在重载的 Java API 时无法主动
+区分 `long`、`int`、`float` 等类型。TS Modify 在每个 KubeJS 脚本作用域中
+注册了 `LONG`、`INT`、`SHORT`、`BYTE`、`FLOAT`、`DOUBLE`、`CHAR` 和
+`BOOLEAN` 工具：
+
+```ts
+const amount = LONG.of("9223372036854775807")
+const index = INT.of(3)
+const flags = BYTE.array([1, 0, 1])
+```
+
+这些工具返回对应的 Java boxed value；调用 Java 重载方法时，TS Modify 会保留
+工厂指定的 primitive 类型，Rhino 随后会自动拆箱。
+整数转换会检查是否为整数及是否越界；需要精确表达超过 JavaScript 安全整数范围
+的 `long` 时请传入十进制字符串。`BOOLEAN` 接受 `true` / `false`、`0` / `1`
+及对应的字符串形式。`array` / `arrayOf` 会创建真正的 Java 原生数组，便于传给
+`long[]`、`int[]` 等参数。
+
 ## 构建与运行
 
 项目使用 Gradle ForgeGradle，目标 Java 版本为 17。

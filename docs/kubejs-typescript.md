@@ -113,6 +113,37 @@ import { hiddenItems } from "../shared_scripts/items"
 
 The shared module is read by both script domains but is not the same Rhino object across server and client contexts. Each side evaluates and caches its own copy.
 
+## Java Primitive Helpers
+
+Java exposes several numeric types that JavaScript does not distinguish. TS Modify
+registers explicit factories in every KubeJS script scope so overloaded Java
+methods can receive the intended boxed value:
+
+```ts
+const ticks = LONG.of("9223372036854775807")
+const slots = INT.of(16)
+const ratio = FLOAT.of(0.5)
+const enabled = BOOLEAN.of(true)
+const marker = CHAR.of("A")
+
+someJavaMethod(ticks)
+```
+
+The available bindings are `LONG`, `INT`, `SHORT`, `BYTE`, `FLOAT`, `DOUBLE`,
+`CHAR`, and `BOOLEAN`. `of`, `valueOf`, and `parse` return the corresponding
+`java.lang.*` boxed value; when choosing a Java overload, TS Modify preserves
+the primitive type selected by the factory before Rhino unboxes it. Integral
+factories require a finite, whole value and enforce the Java range, so pass a
+decimal string when a 64-bit value cannot be represented exactly by a
+JavaScript number. `CHAR` accepts one UTF-16 code unit or a code unit number.
+Boolean conversion accepts `true`/`false`, numeric `0`/`1`, and the same string
+forms.
+
+Each factory also provides `array(values)` and `arrayOf(...)`, which create a
+real Java primitive array such as `long[]` or `int[]` from a JavaScript array,
+Java collection, iterable, or (for `CHAR`) a string. `MIN_VALUE` and
+`MAX_VALUE` are available on all numeric factories.
+
 ## Project Transpilation
 
 For project-level TypeScript output, use `com.pingsu.tsmodify.typescript.project.TypeScriptProjectTranspiler` instead of the KubeJS runtime mode. It recursively reads a source root, writes JavaScript into a separate output root, rewrites relative TypeScript module specifiers, maps output extensions, and copies non-TypeScript files.
