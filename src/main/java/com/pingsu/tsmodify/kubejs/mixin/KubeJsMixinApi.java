@@ -20,7 +20,7 @@ public final class KubeJsMixinApi {
             String targetClass,
             String methodName,
             String methodDescriptor,
-            Object callback) {
+            KubeJsMixinCallback callback) {
         return register(targetClass, methodName, methodDescriptor, KubeJsMixinHook.BEFORE, false, callback);
     }
 
@@ -28,7 +28,7 @@ public final class KubeJsMixinApi {
             String targetClass,
             String methodName,
             String methodDescriptor,
-            Object callback) {
+            KubeJsMixinCallback callback) {
         return register(targetClass, methodName, methodDescriptor, KubeJsMixinHook.BEFORE, true, callback);
     }
 
@@ -36,7 +36,7 @@ public final class KubeJsMixinApi {
             String targetClass,
             String methodName,
             String methodDescriptor,
-            Object callback) {
+            KubeJsMixinCallback callback) {
         return register(targetClass, methodName, methodDescriptor, KubeJsMixinHook.AFTER, false, callback);
     }
 
@@ -47,7 +47,7 @@ public final class KubeJsMixinApi {
             String targetClass,
             String methodName,
             String methodDescriptor,
-            Object callback) {
+            KubeJsMixinCallback callback) {
         return register(targetClass, methodName, methodDescriptor, KubeJsMixinHook.MODIFY_ARGS, false, callback);
     }
 
@@ -58,7 +58,7 @@ public final class KubeJsMixinApi {
             String targetClass,
             String methodName,
             String methodDescriptor,
-            Object callback) {
+            KubeJsMixinCallback callback) {
         return register(
                 targetClass,
                 methodName,
@@ -76,7 +76,7 @@ public final class KubeJsMixinApi {
             String targetClass,
             String methodName,
             String methodDescriptor,
-            Object callback) {
+            KubeJsMixinCallback callback) {
         return register(targetClass, methodName, methodDescriptor, KubeJsMixinHook.REPLACE, false, callback);
     }
 
@@ -87,7 +87,7 @@ public final class KubeJsMixinApi {
             String instructionOwner,
             String instructionMethodName,
             String instructionMethodDescriptor,
-            Object callback) {
+            KubeJsMixinCallback callback) {
         return redirect(
                 targetClass,
                 methodName,
@@ -111,7 +111,7 @@ public final class KubeJsMixinApi {
             String instructionMethodName,
             String instructionMethodDescriptor,
             int ordinal,
-            Object callback) {
+            KubeJsMixinCallback callback) {
         return register(
                 targetClass,
                 methodName,
@@ -135,7 +135,7 @@ public final class KubeJsMixinApi {
             String instructionMethodName,
             String instructionMethodDescriptor,
             int argumentIndex,
-            Object callback) {
+            KubeJsMixinCallback callback) {
         return modifyArg(
                 targetClass,
                 methodName,
@@ -160,7 +160,7 @@ public final class KubeJsMixinApi {
             String instructionMethodDescriptor,
             int ordinal,
             int argumentIndex,
-            Object callback) {
+            KubeJsMixinCallback callback) {
         return register(
                 targetClass,
                 methodName,
@@ -183,7 +183,7 @@ public final class KubeJsMixinApi {
             int localIndex,
             String variableDescriptor,
             String access,
-            Object callback) {
+            KubeJsMixinCallback callback) {
         return modifyVariable(
                 targetClass,
                 methodName,
@@ -206,7 +206,7 @@ public final class KubeJsMixinApi {
             String variableDescriptor,
             String access,
             int ordinal,
-            Object callback) {
+            KubeJsMixinCallback callback) {
         return register(
                 targetClass,
                 methodName,
@@ -227,7 +227,7 @@ public final class KubeJsMixinApi {
             String methodDescriptor,
             KubeJsMixinHook hook,
             boolean cancellable,
-            Object callback) {
+            KubeJsMixinCallback callback) {
         return register(targetClass, methodName, methodDescriptor, hook, cancellable, null, callback);
     }
 
@@ -238,13 +238,13 @@ public final class KubeJsMixinApi {
             KubeJsMixinHook hook,
             boolean cancellable,
             KubeJsMixinInstructionTarget instructionTarget,
-            Object callback) {
+            KubeJsMixinCallback callback) {
         requireStartupRegistration();
         Objects.requireNonNull(callback, "KubeJS mixin callback cannot be null");
-        KubeJsMixinCallback handler = (KubeJsMixinCallback) Context.jsToJava(
+        KubeJsMixinCallback handler = KubeJsMixinRhinoCallback.bind(
                 scriptManager.context,
-                callback,
-                KubeJsMixinCallback.class);
+                scriptManager.topLevelScope,
+                callback);
         int[] line = new int[1];
         String source = Context.getSourcePositionFromStack(scriptManager.context, line);
         return KubeJsMixinRuleRegistry.register(

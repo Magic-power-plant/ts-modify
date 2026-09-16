@@ -16,7 +16,12 @@ terms.
   - Copyright: caoccao.com Sam Cao and contributors
   - License: Apache License, Version 2.0
   - Source: https://github.com/caoccao/swc4j
-  - Notes: Source files keep their original Apache-2.0 copyright headers.
+  - Notes: Source files keep their original Apache-2.0 copyright headers. TS Modify
+    changes are additive and limited to the WASM integration this project needs:
+    `Swc4jWasmRuntime` publishes its module load cost and bridge round trip count
+    through `Swc4jWasmRuntimeStats` (a TS Modify addition carrying the same
+    Apache-2.0 header), prefers the `swc4j_transpile_and_transform` bridge export
+    when it is present, and otherwise degrades to the original two call sequence.
 
 - swc4j reference checkout under `swc4j/`
   - Copyright: caoccao.com Sam Cao and contributors

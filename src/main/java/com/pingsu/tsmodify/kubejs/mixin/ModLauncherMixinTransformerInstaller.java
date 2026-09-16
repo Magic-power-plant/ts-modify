@@ -25,6 +25,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Function;
 
 /**
  * Installs script-selected class transformers into the pinned ModLauncher transform store.
@@ -50,8 +51,44 @@ final class ModLauncherMixinTransformerInstaller {
             TransformStore.class, "transformers", EnumMap.class);
     private static final long TRANSFORM_LIST_TRANSFORMERS_OFFSET = objectFieldOffset(
             TransformList.class, "transformers", Map.class);
+    private static volatile Function<String, Class<?>> loadedTargetLookupForTesting;
 
     private ModLauncherMixinTransformerInstaller() {
+    }
+
+    /**
+     * Looks up an already-defined target class in ModLauncher's transforming class loader.
+     *
+     * <p>This is a query only: it never loads a class. The layout is the one already solidified for
+     * {@link #install(String)} (audit note M3), so no new reflection is introduced.</p>
+     *
+     * @return the defined class, or {@code null} when ModLauncher has no launcher instance yet or the
+     *         class has not been defined
+     */
+    static Class<?> findLoadedTarget(String targetClass) {
+        Objects.requireNonNull(targetClass, "KubeJS mixin target class cannot be null");
+        Function<String, Class<?>> testingLookup = loadedTargetLookupForTesting;
+        if (testingLookup != null) {
+            return testingLookup.apply(targetClass);
+        }
+        Launcher launcher = Launcher.INSTANCE;
+        if (launcher == null) {
+            return null;
+        }
+        TransformingClassLoader classLoader = readObject(
+                launcher,
+                LAUNCHER_CLASS_LOADER_OFFSET,
+                TransformingClassLoader.class,
+                "Launcher#classLoader");
+        return classLoader.getLoadedClass(targetClass);
+    }
+
+    /**
+     * Test seam: replaces the loaded-class lookup so the retransformation path can be exercised on a
+     * pure JVM without a running ModLauncher. Pass {@code null} to restore the real lookup.
+     */
+    static void setLoadedTargetLookupForTesting(Function<String, Class<?>> lookup) {
+        loadedTargetLookupForTesting = lookup;
     }
 
     static void install(String targetClass) {
@@ -231,10 +268,15 @@ final class ModLauncherMixinTransformerInstaller {
     }
 
     private static void requireClassNotLoaded(TransformingClassLoader classLoader, String targetClass) {
-        if (classLoader.getLoadedClass(targetClass) != null) {
-            throw new IllegalStateException(
-                    "KubeJS mixin target is already defined and cannot be transformed safely: " + targetClass);
+        Class<?> loadedTarget = classLoader.getLoadedClass(targetClass);
+        if (loadedTarget == null) {
+            return;
         }
+        throw new IllegalStateException(
+                "KubeJS mixin target is already defined and cannot be transformed safely: " + targetClass
+                        + ". Register a class whose first definition happens after startup_scripts "
+                        + "(API classes are often safer than machine or tile classes). "
+                        + KubeJsMixinRetransform.retransformUnavailableReason(loadedTarget));
     }
 
     private static Unsafe findUnsafe() {

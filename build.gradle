@@ -27,17 +27,62 @@ java {
     toolchain.languageVersion = JavaLanguageVersion.of(17)
 }
 
+sourceSets {
+    // Optional -javaagent artifact. JDK-only classes live in their own source set so they can never
+    // pick up Minecraft, Forge, KubeJS, ASM, or ModLauncher types from the main compile classpath.
+    agent {
+        java.srcDir 'src/agent/java'
+    }
+}
+
 minecraft {
     mappings channel: mapping_channel, version: mapping_version
 
     copyIdeResources = true
 
     runs {
-        configureEach {
+        configureEach { run ->
             workingDirectory project.file('run')
 
             property 'forge.logging.markers', 'REGISTRIES'
             property 'forge.logging.console.level', 'debug'
+
+            // Opt-in convenience for real-machine validation: -PtsmodifyAgent=true appends the
+            // freshly built agent jar to the run JVM. The default keeps the historical behavior.
+            //
+            // ForgeGradle creates the run task after this closure runs, and the dependency on the
+            // agent jar has to be attached then. `tasks.matching { ... }` looks lazy but eagerly
+            // realizes every task in the project, which made a bare `runServer` spend about three
+            // minutes in configuration; `tasks.configureEach` is the genuinely lazy primitive.
+            // This is the S0-Q2 answer: the DSL form matters, not just the argument.
+            if (project.providers.gradleProperty('tsmodifyAgent').map { it.toBoolean() }.orElse(false).get()) {
+                run.jvmArgs "-javaagent:${project.layout.buildDirectory.file("libs/${mod_id}-agent-${mod_version}.jar").get().asFile.absolutePath}"
+                tasks.configureEach { task ->
+                    if (task.name == run.taskName) {
+                        task.dependsOn 'agentJar'
+                    }
+                }
+            }
+
+            // Opt-in JFR for run tasks: -PtsmodifyRunJfr[=<name>] records a bounded profile dump. A
+            // duration is used instead of dumponexit because a game or server run is normally killed
+            // rather than shut down cleanly.
+            if (project.providers.gradleProperty('tsmodifyRunJfr').isPresent()) {
+                def jfrName = project.providers.gradleProperty('tsmodifyRunJfr').get()
+                if (jfrName.isBlank()) {
+                    jfrName = run.name
+                }
+                def jfrSeconds = project.providers.gradleProperty('tsmodifyRunJfrSeconds').orElse('90').get()
+                def jfrFile = project.layout.buildDirectory.file("reports/run/${jfrName}.jfr")
+                run.jvmArgs "-XX:StartFlightRecording=filename=${jfrFile.get().asFile.absolutePath},settings=profile,duration=${jfrSeconds}s"
+                tasks.configureEach { task ->
+                    if (task.name == run.taskName) {
+                        task.doFirst {
+                            jfrFile.get().asFile.parentFile.mkdirs()
+                        }
+                    }
+                }
+            }
 
             mods {
                 "${mod_id}" {
@@ -192,7 +237,35 @@ tasks.named('processResources', ProcessResources).configure {
     }
 }
 
+tasks.named('compileAgentJava', JavaCompile).configure {
+    options.release = 17
+}
+
+// The agent jar is a plain, standalone artifact: it is never reobfuscated and never packed into the
+// mod jar, because it references no Minecraft types. Users pass it through -javaagent.
+tasks.register('agentJar', Jar) {
+    group = 'build'
+    description = 'Optional Java agent jar enabling retransformation of already-loaded KubeJS mixin targets.'
+    from sourceSets.agent.output
+    archiveFileName = "${mod_id}-agent-${mod_version}.jar"
+    destinationDirectory = layout.buildDirectory.dir('libs')
+    manifest {
+        attributes('Premain-Class'          : 'com.pingsu.tsmodify.agent.TsModifyAgent',
+                   'Agent-Class'            : 'com.pingsu.tsmodify.agent.TsModifyAgent',
+                   'Can-Retransform-Classes': 'true',
+                   'Can-Redefine-Classes'   : 'false',
+                   'Implementation-Version' : mod_version)
+    }
+}
+
+tasks.named('build') {
+    dependsOn tasks.named('agentJar')
+}
+
 tasks.named('jar', Jar).configure {
+    // Defensive: the agent classes live in their own source set and must never leak into the mod jar.
+    exclude 'com/pingsu/tsmodify/agent/**'
+
     manifest {
         attributes(["Specification-Title"     : mod_id,
                     "Specification-Vendor"    : mod_authors,
@@ -268,4 +341,46 @@ tasks.register('rhinoBaselineStressTest', JavaExec) {
     systemProperty 'tsmodify.rhino.scriptReload.measurementRounds', providers.gradleProperty('rhinoStressMeasurementRounds').orElse('9').get()
     systemProperty 'tsmodify.rhino.scriptReload.cacheEnabled', 'false'
     systemProperty 'tsmodify.rhino.scriptReload.rhinoVersion', rhino_version
+}
+
+// W1 evidence: the same 38 real TypeScript fixtures transpiled with and without the transpile disk
+// cache, driven through TypeScriptModuleRegistry.preload. Prints a per pass summary line.
+// -PtranspileCacheBenchmarkJfr[=name] records a JFR profile dump (default name: transpile-cache).
+// -PtranspileCacheBenchmarkNoCache disables the disk cache, which turns every pass into a cold pass
+// and gives the A/B counterpart for the JFR comparison.
+tasks.register('transpileCacheBenchmark', JavaExec) {
+    group = 'verification'
+    description = 'Measures the KubeJS transpile disk cache against the raw bridge transpilation path.'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.pingsu.tsmodify.typescript.benchmark.TranspileCacheBenchmarkMain'
+    outputs.upToDateWhen { false }
+
+    if (providers.gradleProperty('transpileCacheBenchmarkJfr').isPresent()) {
+        def jfrName = providers.gradleProperty('transpileCacheBenchmarkJfr').get()
+        if (jfrName.isBlank()) {
+            jfrName = 'transpile-cache'
+        }
+        def jfrFile = layout.buildDirectory.file("reports/transpile-cache/${jfrName}.jfr")
+        doFirst {
+            jfrFile.get().asFile.parentFile.mkdirs()
+        }
+        jvmArgs "-XX:StartFlightRecording=filename=${jfrFile.get().asFile.absolutePath},settings=profile,dumponexit=true"
+    }
+
+    if (providers.gradleProperty('transpileCacheBenchmarkNoCache').isPresent()) {
+        systemProperty 'tsmodify.transpileCache', 'false'
+    }
+}
+
+// W3 evidence: how much of a transpilation pass the second WASM bridge crossing costs, with a
+// median over repeated passes. Byte equivalence of the two variants is asserted by
+// TranspileBridgeMergeTest instead.
+tasks.register('transpileBridgeBenchmark', JavaExec) {
+    group = 'verification'
+    description = 'Measures the merged single crossing SWC bridge call against the two call sequence.'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.pingsu.tsmodify.typescript.benchmark.TranspileBridgeBenchmarkMain'
+    outputs.upToDateWhen { false }
 }

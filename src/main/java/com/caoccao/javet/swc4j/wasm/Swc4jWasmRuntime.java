@@ -59,14 +59,24 @@ import java.util.Map;
 public final class Swc4jWasmRuntime {
     private static final Swc4jComments EMPTY_COMMENTS = new Swc4jComments(Map.of(), Map.of());
     private static final Gson GSON = new Gson();
-    private static final Swc4jWasmRuntime INSTANCE = new Swc4jWasmRuntime();
+    private static final Swc4jWasmRuntime INSTANCE;
     private static final String RESOURCE_NAME = "/swc4j/swc4j_bridge.wasm";
+
+    static {
+        // TS Modify: the pure-Java WASM runtime parses an ~11 MB module on first use. Startup
+        // diagnostics need that cost separately from transpilation work, and must be able to read
+        // it without triggering the load, so it is published through Swc4jWasmRuntimeStats.
+        long startNanos = System.nanoTime();
+        INSTANCE = new Swc4jWasmRuntime();
+        Swc4jWasmRuntimeStats.recordLoadDuration(System.nanoTime() - startNanos);
+    }
 
     private final ExportFunction allocFunction;
     private final ExportFunction freeFunction;
     private final Memory memory;
     private final ExportFunction transformFunction;
     private final ExportFunction transpileFunction;
+    private final ExportFunction transpileAndTransformFunction;
     private final ExportFunction versionFunction;
     @SuppressWarnings("FieldCanBeLocal")
     private final WasiPreview1 wasiPreview1;
@@ -94,8 +104,25 @@ public final class Swc4jWasmRuntime {
             versionFunction = instance.exports().function("swc4j_version");
             transformFunction = instance.exports().function("swc4j_transform");
             transpileFunction = instance.exports().function("swc4j_transpile");
+            transpileAndTransformFunction = optionalExport(instance, "swc4j_transpile_and_transform");
         } catch (IOException e) {
             throw new IllegalStateException("Failed to read " + RESOURCE_NAME, e);
+        }
+    }
+
+    /**
+     * Resolves an export that a bridge build may not provide yet.
+     *
+     * <p>{@code swc4j_transpile_and_transform} was added to the bridge after the request/response
+     * contract of the other exports was frozen. A stale packaged module (for example a Java-only
+     * build that skipped {@code compileSwc4jWasm}) must still work, so a missing export degrades to
+     * the two-call path instead of failing at startup.</p>
+     */
+    private static ExportFunction optionalExport(Instance instance, String name) {
+        try {
+            return instance.exports().function(name);
+        } catch (RuntimeException | LinkageError e) {
+            return null;
         }
     }
 
@@ -149,6 +176,57 @@ public final class Swc4jWasmRuntime {
                 code,
                 List.of(),
                 EMPTY_COMMENTS);
+    }
+
+    /**
+     * Runs the TypeScript strip and the syntax lowering inside one bridge invocation.
+     *
+     * <p>Equivalent to {@link #transpile(String, Swc4jTranspileOptions)} followed by
+     * {@link #transform(String, Swc4jTransformOptions)} with the transpiled text, except that the
+     * intermediate JavaScript never crosses the WASM boundary. Both option sets are sent verbatim,
+     * so the emitted body is unchanged.</p>
+     *
+     * @throws Swc4jCoreException when the packaged bridge does not export the merged entry point
+     */
+    public Swc4jTransformOutput transpileAndTransform(
+            String code,
+            Swc4jTranspileOptions transpileOptions,
+            Swc4jTransformOptions transformOptions) throws Swc4jCoreException {
+        requireUnsupportedCallbacksAbsent(transpileOptions, "transpile");
+        requireUnsupportedCallbacksAbsent(transformOptions, "transform");
+        if (transpileOptions.isCaptureAst()
+                || transpileOptions.isCaptureComments()
+                || transpileOptions.isCaptureTokens()) {
+            throw Swc4jCoreException.featureNotSupported("WASM transpile AST, comment, and token capture");
+        }
+        if (transpileAndTransformFunction == null) {
+            throw Swc4jCoreException.featureNotSupported(
+                    "The packaged " + RESOURCE_NAME + " does not export swc4j_transpile_and_transform");
+        }
+
+        JsonObject request = new JsonObject();
+        request.addProperty("code", code);
+        request.add("transpile", transpileOptionsJson(transpileOptions));
+        request.add("transform", transformOptionsJson(transformOptions));
+        JsonObject response;
+        try {
+            response = invoke(transpileAndTransformFunction, request);
+        } catch (RuntimeException e) {
+            throw Swc4jCoreException.transformError("Failed to invoke SWC WASM transpile-and-transform", e);
+        }
+        if (!isOk(response)) {
+            throw Swc4jCoreException.transformError(errorMessage(response));
+        }
+        return new Swc4jTransformOutput(
+                response.get("code").getAsString(),
+                mediaType(response),
+                parseMode(response),
+                optionalString(response.get("sourceMap")));
+    }
+
+    /** Whether the packaged bridge provides {@link #transpileAndTransform}. */
+    public boolean supportsTranspileAndTransform() {
+        return transpileAndTransformFunction != null;
     }
 
     private static void addBaseOptions(JsonObject optionsJson, Swc4jOptions options) {
@@ -234,6 +312,14 @@ public final class Swc4jWasmRuntime {
     }
 
     private JsonObject createTransformRequest(String code, Swc4jTransformOptions options) {
+        return createRequest(code, transformOptionsJson(options));
+    }
+
+    private JsonObject createTranspileRequest(String code, Swc4jTranspileOptions options) {
+        return createRequest(code, transpileOptionsJson(options));
+    }
+
+    private static JsonObject transformOptionsJson(Swc4jTransformOptions options) {
         JsonObject optionsJson = new JsonObject();
         addBaseOptions(optionsJson, options);
         optionsJson.addProperty("asciiOnly", options.isAsciiOnly());
@@ -244,10 +330,10 @@ public final class Swc4jWasmRuntime {
         optionsJson.addProperty("omitLastSemi", options.isOmitLastSemi());
         optionsJson.addProperty("sourceMap", options.getSourceMap().getId());
         optionsJson.addProperty("target", options.getTarget().getId());
-        return createRequest(code, optionsJson);
+        return optionsJson;
     }
 
-    private JsonObject createTranspileRequest(String code, Swc4jTranspileOptions options) {
+    private static JsonObject transpileOptionsJson(Swc4jTranspileOptions options) {
         JsonObject optionsJson = new JsonObject();
         addBaseOptions(optionsJson, options);
         optionsJson.addProperty("captureAst", options.isCaptureAst());
@@ -263,7 +349,7 @@ public final class Swc4jWasmRuntime {
         optionsJson.addProperty("sourceMap", options.getSourceMap().getId());
         optionsJson.addProperty("varDeclImports", options.isVarDeclImports());
         optionsJson.addProperty("verbatimModuleSyntax", options.isVerbatimModuleSyntax());
-        return createRequest(code, optionsJson);
+        return optionsJson;
     }
 
     private JsonObject createRequest(String code, JsonObject optionsJson) {
@@ -283,6 +369,7 @@ public final class Swc4jWasmRuntime {
         int requestPointer = allocate(requestBytes.length);
         try {
             memory.write(requestPointer, requestBytes);
+            Swc4jWasmRuntimeStats.recordInvocation();
             long packed = function.apply(requestPointer, requestBytes.length)[0];
             return readAndFreeResponse(packed);
         } finally {

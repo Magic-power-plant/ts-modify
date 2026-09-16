@@ -40,7 +40,13 @@ final class KubeJsMixinBytecodeInjector implements Opcodes {
     private KubeJsMixinBytecodeInjector() {
     }
 
-    static void inject(ClassNode targetClass, List<? extends AbstractKubeJsMixinRule> rules) {
+    /**
+     * Injects the active rules into the given class node.
+     *
+     * @return the number of rules that were actually injected; already-present rule markers are
+     *         skipped, which keeps a repeated retransformation of the same class idempotent
+     */
+    static int inject(ClassNode targetClass, List<? extends AbstractKubeJsMixinRule> rules) {
         Map<MethodKey, List<AbstractKubeJsMixinRule>> rulesByMethod = new LinkedHashMap<>();
         for (AbstractKubeJsMixinRule rule : rules) {
             if (rule.isActive()) {
@@ -50,6 +56,7 @@ final class KubeJsMixinBytecodeInjector implements Opcodes {
             }
         }
 
+        int injectedRules = 0;
         for (Map.Entry<MethodKey, List<AbstractKubeJsMixinRule>> entry : rulesByMethod.entrySet()) {
             MethodNode method = findMethod(targetClass, entry.getKey());
             if (method == null) {
@@ -58,8 +65,9 @@ final class KubeJsMixinBytecodeInjector implements Opcodes {
                                 + entry.getKey().name + entry.getKey().descriptor);
             }
             validateMethod(targetClass, method);
-            injectMethod(method, entry.getValue());
+            injectedRules += injectMethod(method, entry.getValue());
         }
+        return injectedRules;
     }
 
     private static MethodNode findMethod(ClassNode targetClass, MethodKey key) {
@@ -82,7 +90,7 @@ final class KubeJsMixinBytecodeInjector implements Opcodes {
         }
     }
 
-    private static void injectMethod(MethodNode method, List<AbstractKubeJsMixinRule> rules) {
+    private static int injectMethod(MethodNode method, List<AbstractKubeJsMixinRule> rules) {
         List<AbstractKubeJsMixinRule> freshRules = new ArrayList<>();
         for (AbstractKubeJsMixinRule rule : rules) {
             if (!containsRuleMarker(method, rule.id())) {
@@ -90,7 +98,7 @@ final class KubeJsMixinBytecodeInjector implements Opcodes {
             }
         }
         if (freshRules.isEmpty()) {
-            return;
+            return 0;
         }
 
         Map<AbstractInsnNode, List<AbstractKubeJsMixinRule>> instructionPlans = resolveInstructionPlans(method, freshRules);
@@ -117,6 +125,7 @@ final class KubeJsMixinBytecodeInjector implements Opcodes {
         if (!returnRules.isEmpty()) {
             appendReturnHooks(method, returnRules);
         }
+        return freshRules.size();
     }
 
     private static boolean containsRuleMarker(MethodNode method, String ruleId) {

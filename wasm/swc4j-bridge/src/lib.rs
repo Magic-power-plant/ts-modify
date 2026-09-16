@@ -2,7 +2,7 @@ use anyhow::{Error, Result};
 use base64::Engine;
 use deno_ast::swc::ast::{
     AssignExpr, AssignOp, AssignTarget, BlockStmt, Decl, EsVersion, Expr, ExprStmt, ForStmt,
-    ModuleItem, Program, Stmt, VarDecl, VarDeclKind, VarDeclOrExpr,
+    ModuleItem, Pat, Program, Stmt, VarDecl, VarDeclKind, VarDeclOrExpr, VarDeclarator,
 };
 use deno_ast::swc::codegen::{text_writer::JsWriter, Config, Emitter};
 use deno_ast::swc::common::{sync::Lrc, BytePos, FileName, FilePathMapping, LineCol, SourceMap};
@@ -15,7 +15,7 @@ use std::mem;
 use std::slice;
 use std::str;
 
-const VERSION: &str = "2.1.0";
+const VERSION: &str = "2.2.0";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +99,20 @@ enum JsxRequest {
 struct JsxAutomaticRequest {
     development: bool,
     import_source: Option<String>,
+}
+
+/// TS Modify addition: one ABI crossing that performs the TypeScript strip and the syntax
+/// lowering that would otherwise need a second `swc4j_transform` round trip.
+///
+/// Both option sets are carried verbatim, so the bridge performs exactly the two calls the Java
+/// side used to make and the emitted body is unchanged. The existing request structs stay frozen,
+/// which keeps an older bridge usable by newer Java code (the merged export simply is not there).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TranspileAndTransformRequest {
+    code: String,
+    transpile: TranspileOptionsRequest,
+    transform: TransformOptionsRequest,
 }
 
 #[derive(Debug, Serialize)]
@@ -255,6 +269,12 @@ pub extern "C" fn swc4j_transpile(ptr: *const u8, len: usize) -> u64 {
     invoke(ptr, len, transpile_request)
 }
 
+/// Runs `swc4j_transpile` and then `swc4j_transform` inside one bridge invocation.
+#[no_mangle]
+pub extern "C" fn swc4j_transpile_and_transform(ptr: *const u8, len: usize) -> u64 {
+    invoke(ptr, len, transpile_and_transform_request)
+}
+
 fn invoke<F>(ptr: *const u8, len: usize, handler: F) -> u64
 where
     F: FnOnce(&str) -> Result<serde_json::Value>,
@@ -292,6 +312,21 @@ fn transpile_request(request: &str) -> Result<serde_json::Value> {
         "mediaType": media_type_id(output.media_type),
         "parseMode": parse_mode_id(output.parse_mode),
         "sourceMap": output.source_map,
+    }))
+}
+
+fn transpile_and_transform_request(request: &str) -> Result<serde_json::Value> {
+    let request: TranspileAndTransformRequest = serde_json::from_str(request)?;
+    let transpile_options = TranspileOptions::from(request.transpile);
+    let transform_options = TransformOptions::from(request.transform);
+    let transpiled = transpile(request.code, &transpile_options)?;
+    let transformed = transform(transpiled.code, &transform_options)?;
+    Ok(json!({
+        "ok": true,
+        "code": transformed.code,
+        "mediaType": media_type_id(transformed.media_type),
+        "parseMode": parse_mode_id(transformed.parse_mode),
+        "sourceMap": transformed.source_map,
     }))
 }
 
@@ -362,6 +397,20 @@ fn transform(code: String, options: &TransformOptions) -> Result<TransformOutput
                 || {
                     program.apply((
                         deno_ast::swc::transforms::resolver(unresolved_mark, top_level_mark, false),
+                        // Class fields must be lowered before the ES2015 class transform runs. The
+                        // ES2015 transform deliberately ignores ClassProp/PrivateProp members (it
+                        // leaves them to this pass), so omitting it silently deleted every field
+                        // initializer, including `static readonly created = []`, and the script
+                        // then failed at runtime with "Cannot call method of undefined".
+                        // `private_as_properties` turns `#x` into a mangled normal property because
+                        // an ES5 target has no private names.
+                        deno_ast::swc::transforms::compat::es2022::class_properties(
+                            deno_ast::swc::transforms::compat::es2022::class_properties::Config {
+                                private_as_properties: true,
+                                ..Default::default()
+                            },
+                            unresolved_mark,
+                        ),
                         deno_ast::swc::transforms::compat::es2018::object_rest_spread(
                             Default::default(),
                         ),
@@ -373,6 +422,7 @@ fn transform(code: String, options: &TransformOptions) -> Result<TransformOutput
                         deno_ast::swc::transforms::helpers::inject_helpers(top_level_mark),
                         deno_ast::swc::transforms::hygiene::hygiene(),
                         visit_mut_pass(SplitForVarDeclarations),
+                        visit_mut_pass(HoistTryVarDeclarations),
                         deno_ast::swc::transforms::fixer::fixer(Some(&swc_comments)),
                     ))
                 },
@@ -426,6 +476,93 @@ fn transform(code: String, options: &TransformOptions) -> Result<TransformOutput
         parse_mode: parsed_parse_mode(&parsed_source),
         source_map,
     })
+}
+
+/// Rhino 1.20's embedded interpreter loses the visibility of a `var` that is declared inside a
+/// `try` block when an abrupt completion (`break`, `return`) has to run the inlined `finally`.
+/// The `finally` then reads the name as unbound and throws `ReferenceError`, even though `var` is
+/// function scoped. SWC's ES5 `for...of` lowering produces exactly that shape: it declares
+/// `var _iterator = ...` inside the loop's `try` and calls `_iterator.return()` from the `finally`.
+///
+/// Declaring the same `var` just before the `try` statement makes Rhino resolve it again, so this
+/// pass lifts simple `var` declarations (identifier declarators only) out of a `try` block while
+/// leaving their initializers in place as assignments. `continue` is not affected, but hoisting is
+/// harmless for it, and a pattern declarator is left completely untouched to avoid changing
+/// destructuring semantics.
+struct HoistTryVarDeclarations;
+
+impl VisitMut for HoistTryVarDeclarations {
+    noop_visit_mut_type!();
+
+    fn visit_mut_stmts(&mut self, statements: &mut Vec<Stmt>) {
+        statements.visit_mut_children_with(self);
+        let mut rewritten = Vec::with_capacity(statements.len());
+        for statement in mem::take(statements) {
+            let Stmt::Try(mut try_statement) = statement else {
+                rewritten.push(statement);
+                continue;
+            };
+            let hoisted = Self::hoist_from_try_block(&mut try_statement.block);
+            if !hoisted.is_empty() {
+                rewritten.push(Stmt::Decl(Decl::Var(Box::new(VarDecl {
+                    span: try_statement.span,
+                    ctxt: Default::default(),
+                    kind: VarDeclKind::Var,
+                    declare: false,
+                    decls: hoisted,
+                }))));
+            }
+            rewritten.push(Stmt::Try(try_statement));
+        }
+        *statements = rewritten;
+    }
+}
+
+impl HoistTryVarDeclarations {
+    fn hoist_from_try_block(block: &mut BlockStmt) -> Vec<VarDeclarator> {
+        let mut hoisted = Vec::new();
+        let mut rewritten = Vec::with_capacity(block.stmts.len());
+        for statement in mem::take(&mut block.stmts) {
+            let Stmt::Decl(Decl::Var(var_decl)) = statement else {
+                rewritten.push(statement);
+                continue;
+            };
+            if var_decl.kind != VarDeclKind::Var
+                || var_decl.decls.is_empty()
+                || !var_decl
+                    .decls
+                    .iter()
+                    .all(|declarator| matches!(declarator.name, Pat::Ident(_)))
+            {
+                rewritten.push(Stmt::Decl(Decl::Var(var_decl)));
+                continue;
+            }
+
+            let decls = var_decl.decls;
+            for mut declarator in decls {
+                let initializer = declarator.init.take();
+                let declarator_span = declarator.span;
+                let target = AssignTarget::try_from(declarator.name.clone()).ok();
+                hoisted.push(VarDeclarator {
+                    init: None,
+                    ..declarator
+                });
+                if let (Some(left), Some(right)) = (target, initializer) {
+                    rewritten.push(Stmt::Expr(ExprStmt {
+                        span: declarator_span,
+                        expr: Box::new(Expr::Assign(AssignExpr {
+                            span: declarator_span,
+                            op: AssignOp::Assign,
+                            left,
+                            right,
+                        })),
+                    }));
+                }
+            }
+        }
+        block.stmts = rewritten;
+        hoisted
+    }
 }
 
 /// Rhino 1.20's embedded interpreter mishandles comma-separated `var`

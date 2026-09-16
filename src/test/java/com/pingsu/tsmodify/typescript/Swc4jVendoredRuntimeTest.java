@@ -11,6 +11,12 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class Swc4jVendoredRuntimeTest {
+    /**
+     * Upstream swc4j Java API artifacts that must never be present: this project runs the vendored
+     * API subset over the local WASM bridge instead of the published JNI libraries. The version in
+     * these names tracks the vendored upstream API, not the bridge build version.
+     */
+    private static final String VENDORED_UPSTREAM_VERSION = "2.1.0";
     private static final List<String> NATIVE_RESOURCE_NAMES = List.of(
             "/libswc4j-linux-arm64.v.2.1.0.so",
             "/libswc4j-linux-x86_64.v.2.1.0.so",
@@ -24,9 +30,9 @@ class Swc4jVendoredRuntimeTest {
         URL swc4jClassLocation = Swc4j.class.getProtectionDomain().getCodeSource().getLocation();
         String classLocation = swc4jClassLocation.toString();
 
-        assertFalse(classLocation.contains("swc4j-2.1.0.jar"), classLocation);
+        assertFalse(classLocation.contains("swc4j-" + VENDORED_UPSTREAM_VERSION + ".jar"), classLocation);
         NATIVE_RESOURCE_NAMES.forEach(resourceName -> assertNull(Swc4j.class.getResource(resourceName), resourceName));
         assertNotNull(Swc4j.class.getResource("/swc4j/swc4j_bridge.wasm"));
-        assertEquals("2.1.0", new Swc4j().getVersion());
+        assertEquals("2.2.0", new Swc4j().getVersion());
     }
 }

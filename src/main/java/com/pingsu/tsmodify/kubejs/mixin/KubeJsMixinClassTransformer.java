@@ -34,9 +34,11 @@ final class KubeJsMixinClassTransformer implements ITransformer<ClassNode> {
 
     @Override
     public TransformerVoteResult castVote(ITransformerVotingContext context) {
-        return KubeJsMixinRuleRegistry.hasActiveRules(targetClass)
-                ? TransformerVoteResult.YES
-                : TransformerVoteResult.NO;
+        if (KubeJsMixinRuleRegistry.hasActiveRules(targetClass)) {
+            return TransformerVoteResult.YES;
+        }
+        KubeJsMixinRuleRegistry.reportTargetWithoutActiveRules(targetClass);
+        return TransformerVoteResult.NO;
     }
 
     @Override

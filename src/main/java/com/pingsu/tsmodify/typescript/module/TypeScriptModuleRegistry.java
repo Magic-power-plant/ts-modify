@@ -1,8 +1,9 @@
 package com.pingsu.tsmodify.typescript.module;
 
-import com.pingsu.tsmodify.typescript.TypeScriptSourceTranspileResult;
 import com.pingsu.tsmodify.typescript.TypeScriptTranspileException;
 import com.pingsu.tsmodify.typescript.TypeScriptTranspiler;
+import com.pingsu.tsmodify.typescript.cache.TranspileDiskCache;
+import com.pingsu.tsmodify.typescript.cache.TranspileMetrics;
 import dev.latvian.mods.kubejs.script.ScriptFileInfo;
 import dev.latvian.mods.kubejs.script.ScriptSource;
 import dev.latvian.mods.kubejs.script.ScriptType;
@@ -15,12 +16,24 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class TypeScriptModuleRegistry {
     private static final String SHARED_NAMESPACE = "shared";
     private static final String SHARED_FOLDER = TypeScriptScriptDirectories.SHARED_SCRIPTS;
     private static final Map<SourceKey, ModuleSource> SOURCES = new ConcurrentHashMap<>();
+    /**
+     * P2-2 resolution cache: {@code domain + namespace + requested path -> resolved module id}.
+     *
+     * <p>Resolving one import probes up to nine candidate paths with {@link Files#isRegularFile}, so
+     * a modpack that imports the same module from many files repeated the same disk probes. The
+     * cache lives for one script load only; {@link #clear()} drops it.</p>
+     */
+    private static final Map<ResolutionKey, String> RESOLVED_MODULE_IDS = new ConcurrentHashMap<>();
+    /** P2-2 existence cache: module ids proven to exist on disk during this script load. */
+    private static final Set<SourceKey> AVAILABLE_SOURCES = ConcurrentHashMap.newKeySet();
 
     private TypeScriptModuleRegistry() {
     }
@@ -65,9 +78,8 @@ public final class TypeScriptModuleRegistry {
 
         String modulePath = normalizeScriptPath(scriptTypeName, fileName);
         String moduleId = moduleId(namespace, modulePath);
-        String source = String.join("\n", sourceLines);
-        TypeScriptSourceTranspileResult result = TypeScriptTranspiler.transpileKubeJsModuleBody(modulePath, source);
-        register(domain, moduleId, modulePath, result.code());
+        String source = normalizeLineEndings(String.join("\n", sourceLines));
+        register(domain, moduleId, modulePath, transpileModuleBody(modulePath, source));
 
         List<String> entryLines = new ArrayList<>();
         for (String line : sourceLines) {
@@ -148,8 +160,17 @@ public final class TypeScriptModuleRegistry {
                         + "' resolves outside " + domain.name() + " and shared script roots");
     }
 
+    /**
+     * Drops every per-load cache.
+     *
+     * <p>Beside the in-memory module sources this clears the resolution caches, because those
+     * describe the script files that existed during the load that is ending. KubeJS calls this on
+     * every script reload, which is the only supported invalidation point.</p>
+     */
     public static void clear() {
         SOURCES.clear();
+        RESOLVED_MODULE_IDS.clear();
+        AVAILABLE_SOURCES.clear();
     }
 
     static String moduleId(String namespace, String path) {
@@ -159,22 +180,40 @@ public final class TypeScriptModuleRegistry {
 
     private static String resolveExisting(TypeScriptScriptDomain domain, String namespace, String requestedPath) {
         String normalizedPath = normalizeModulePath(requestedPath);
-        for (String candidate : candidatePaths(normalizedPath)) {
+        ResolutionKey resolutionKey = new ResolutionKey(domain.name(), namespace, normalizedPath);
+        String cached = RESOLVED_MODULE_IDS.get(resolutionKey);
+        if (cached != null) {
+            return cached;
+        }
+
+        List<String> candidates = candidatePaths(normalizedPath);
+        for (String candidate : candidates) {
             String moduleId = namespace + ":" + candidate;
             if (isSourceAvailable(domain, moduleId)) {
+                RESOLVED_MODULE_IDS.put(resolutionKey, moduleId);
                 return moduleId;
             }
         }
-        String firstCandidate = candidatePaths(normalizedPath).get(0);
         throw new TypeScriptTranspileException(
-                "Cannot resolve TypeScript module '" + requestedPath + "' as '" + namespace + ":" + firstCandidate + "'");
+                "Cannot resolve TypeScript module '" + requestedPath + "' as '" + namespace + ":" + candidates.get(0) + "'");
     }
 
     private static boolean isSourceAvailable(TypeScriptScriptDomain domain, String moduleId) {
-        if (SOURCES.containsKey(new SourceKey(domain.name(), moduleId))) {
+        SourceKey sourceKey = new SourceKey(domain.name(), moduleId);
+        if (SOURCES.containsKey(sourceKey) || AVAILABLE_SOURCES.contains(sourceKey)) {
             return true;
         }
 
+        // Only positive probes are remembered. Caching a negative would make a module that appears
+        // later in the same load permanently unresolvable, which is not worth the saved stat call.
+        boolean available = probeSourceAvailability(domain, moduleId);
+        if (available) {
+            AVAILABLE_SOURCES.add(sourceKey);
+        }
+        return available;
+    }
+
+    private static boolean probeSourceAvailability(TypeScriptScriptDomain domain, String moduleId) {
         ParsedModuleId parsed = parseModuleId(moduleId);
         if (!TypeScriptTranspiler.isTranspilableTypeScriptFile(parsed.path())) {
             return false;
@@ -197,15 +236,55 @@ public final class TypeScriptModuleRegistry {
         }
 
         try {
-            String source = Files.readString(normalizedSource, StandardCharsets.UTF_8);
+            String source = normalizeLineEndings(Files.readString(normalizedSource, StandardCharsets.UTF_8));
             String sourceName = parsed.shared()
                     ? SHARED_FOLDER + "/" + parsed.path()
                     : parsed.path();
-            String body = TypeScriptTranspiler.transpileKubeJsModuleBody(sourceName, source).code();
-            return new ModuleSource(sourceName, body);
+            return new ModuleSource(sourceName, transpileModuleBody(sourceName, source));
         } catch (IOException e) {
             throw new TypeScriptTranspileException("Failed to read TypeScript module '" + moduleId + "'", e);
         }
+    }
+
+    /**
+     * Single entry point for KubeJS module body transpilation.
+     *
+     * <p>Both call sites ({@link #preload} and {@link #loadSourceFromDisk}) must funnel through
+     * here so that the disk cache and its metrics cover every transpilation and so that the source
+     * text hashed for the cache key is byte-for-byte the text handed to the SWC bridge.</p>
+     */
+    private static String transpileModuleBody(String sourceName, String source) {
+        TranspileDiskCache cache = TranspileDiskCache.shared();
+        byte[] sourceBytes = source.getBytes(StandardCharsets.UTF_8);
+        long startNanos = System.nanoTime();
+        Optional<String> cached = cache.lookup(sourceName, sourceBytes);
+        if (cached.isPresent()) {
+            TranspileMetrics.record(sourceName, sourceBytes.length, System.nanoTime() - startNanos,
+                    TranspileMetrics.Outcome.HIT);
+            return cached.get();
+        }
+
+        String body = TypeScriptTranspiler.transpileKubeJsModuleBody(sourceName, source).code();
+        long elapsedNanos = System.nanoTime() - startNanos;
+        TranspileMetrics.record(sourceName, sourceBytes.length, elapsedNanos,
+                cache.enabled() ? TranspileMetrics.Outcome.MISS : TranspileMetrics.Outcome.BYPASS);
+        cache.store(sourceName, sourceBytes, body);
+        return body;
+    }
+
+    /**
+     * Collapses CRLF to LF before hashing and transpiling.
+     *
+     * <p>KubeJS hands {@link #preload} lines read from a reader, so that path never contains a
+     * carriage return, while {@link #loadSourceFromDisk} reads raw file bytes. Normalizing both
+     * lets one physical file map to exactly one cache entry regardless of the path that reached
+     * it, and keeps the cache key and the transpiled text in agreement.</p>
+     */
+    private static String normalizeLineEndings(String source) {
+        if (source.indexOf('\r') < 0) {
+            return source;
+        }
+        return source.replace("\r\n", "\n").replace('\r', '\n');
     }
 
     private static List<String> candidatePaths(String path) {
@@ -300,6 +379,9 @@ public final class TypeScriptModuleRegistry {
     }
 
     private record SourceKey(String domainName, String moduleId) {
+    }
+
+    private record ResolutionKey(String domainName, String namespace, String requestedPath) {
     }
 
     private record ParsedModuleId(String namespace, String path) {

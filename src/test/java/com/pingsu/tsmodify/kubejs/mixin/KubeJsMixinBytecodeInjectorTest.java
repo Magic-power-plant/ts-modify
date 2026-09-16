@@ -1,10 +1,12 @@
 package com.pingsu.tsmodify.kubejs.mixin;
 
 import com.example.tsmodifytest.KubeJsMixinHookTarget;
+import com.pingsu.tsmodify.kubejs.TsmodifyKubeJSPlugin;
 import cpw.mods.modlauncher.TransformStore;
 import cpw.mods.modlauncher.TransformTargetLabel;
 import cpw.mods.modlauncher.TransformerHolder;
 import cpw.mods.modlauncher.api.ITransformer;
+import cpw.mods.modlauncher.api.TransformerVoteResult;
 import dev.latvian.mods.rhino.Context;
 import dev.latvian.mods.rhino.Scriptable;
 import dev.latvian.mods.rhino.Wrapper;
@@ -528,6 +530,36 @@ class KubeJsMixinBytecodeInjectorTest {
     }
 
     @Test
+    void pluginCacheClearRetainsRulesForDelayedClassDefinition() throws Exception {
+        AtomicInteger callbacks = new AtomicInteger();
+        KubeJsMixinRuleRegistry.registerForTesting(
+                TARGET_CLASS,
+                "add",
+                "(I)V",
+                KubeJsMixinHook.BEFORE,
+                false,
+                invocation -> callbacks.incrementAndGet());
+
+        TsmodifyKubeJSPlugin plugin = new TsmodifyKubeJSPlugin();
+        plugin.clearCaches();
+        plugin.clearCaches();
+
+        KubeJsMixinClassTransformer transformer = new KubeJsMixinClassTransformer(TARGET_CLASS);
+        assertEquals(TransformerVoteResult.YES, transformer.castVote(null));
+
+        ClassNode classNode = readTargetClass();
+        transformer.transform(classNode, null);
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        classNode.accept(writer);
+        Class<?> transformed = defineTransformedTarget(writer.toByteArray());
+        Object target = transformed.getDeclaredConstructor().newInstance();
+        transformed.getMethod("add", int.class).invoke(target, 23);
+
+        assertEquals(1, callbacks.get());
+        assertEquals(23, transformed.getField("hits").getInt(target));
+    }
+
+    @Test
     void installerRegistersWrappedTransformerInPinnedModLauncherStore() throws Exception {
         AtomicReference<KubeJsMixinInvocation> captured = new AtomicReference<>();
         KubeJsMixinRuleRegistry.registerForTesting(
@@ -765,6 +797,60 @@ class KubeJsMixinBytecodeInjectorTest {
 
         assertNull(failure.get());
         assertEquals(17, ((Number) Wrapper.unwrapped(scope.get(context, "observed", scope))).intValue());
+    }
+
+    @Test
+    void retainedRhinoCallbackUsesOriginalStartupScopeAfterReload() throws InterruptedException {
+        Context startupContext = Context.enter();
+        Scriptable startupScope = startupContext.initStandardObjects();
+        Object callback = startupContext.evaluateString(
+                startupScope,
+                "var marker = 'startup'; var observed = null; "
+                        + "function callback(event) { observed = marker + ':' + event.arguments[0]; } callback;",
+                "kubejs-mixin-startup-callback-test.js",
+                1,
+                null);
+        startupContext.setTopCall(startupScope);
+        KubeJsMixinCallback handler;
+        try {
+            handler = KubeJsMixinRhinoCallback.bind(startupContext, startupScope, callback);
+        } finally {
+            startupContext.setTopCall(null);
+        }
+
+        Context reloadedContext = Context.enter();
+        Scriptable reloadedScope = reloadedContext.initStandardObjects();
+        reloadedContext.evaluateString(
+                reloadedScope,
+                "var marker = 'reloaded';",
+                "kubejs-mixin-reloaded-callback-test.js",
+                1,
+                null);
+
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread callbackThread = new Thread(() -> {
+            try {
+                handler.onInvoke(new KubeJsMixinInvocation(
+                        TARGET_CLASS,
+                        "add",
+                        "(I)V",
+                        KubeJsMixinHook.BEFORE,
+                        false,
+                        null,
+                        new Object[]{17},
+                        null));
+            } catch (Throwable throwable) {
+                failure.set(throwable);
+            }
+        }, "kubejs-mixin-retained-callback-test");
+        callbackThread.start();
+        callbackThread.join();
+
+        assertNull(failure.get());
+        assertEquals("startup:17", String.valueOf(Wrapper.unwrapped(startupScope.get(
+                startupContext,
+                "observed",
+                startupScope))));
     }
 
     @Test

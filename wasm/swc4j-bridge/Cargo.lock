@@ -1050,7 +1050,7 @@ dependencies = [
 
 [[package]]
 name = "swc4j_bridge"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "base64",

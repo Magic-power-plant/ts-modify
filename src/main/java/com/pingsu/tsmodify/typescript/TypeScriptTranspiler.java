@@ -9,6 +9,7 @@ import com.caoccao.javet.swc4j.options.Swc4jTransformOptions;
 import com.caoccao.javet.swc4j.options.Swc4jTranspileOptions;
 import com.caoccao.javet.swc4j.outputs.Swc4jTransformOutput;
 import com.caoccao.javet.swc4j.outputs.Swc4jTranspileOutput;
+import com.caoccao.javet.swc4j.wasm.Swc4jWasmRuntime;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptDeclarationStripper;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptAutomaticSemicolonGuard;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptCommonJsModuleTransformer;
@@ -29,6 +30,11 @@ import java.util.regex.Pattern;
 public final class TypeScriptTranspiler {
     private static final Pattern MODULE_SPECIFIER_PATTERN = Pattern.compile(
             "(\\bfrom\\s*|\\bimport\\s*\\(\\s*|\\brequire\\s*\\(\\s*|\\bimport\\s+)(['\"])([^'\"]+)(['\"])");
+    /**
+     * Rollback switch for the merged bridge call. Set to {@code false} to force the two call
+     * sequence, which is what the equivalence test compares against.
+     */
+    public static final String MERGED_BRIDGE_CALL_PROPERTY = "tsmodify.mergedTranspileCall";
     private static final Swc4j SWC4J = new Swc4j();
 
     private TypeScriptTranspiler() {
@@ -63,7 +69,9 @@ public final class TypeScriptTranspiler {
         }
         TypeScriptSourceTranspileResult result;
         try {
-            result = swcTranspile(fileName, swcSource, config);
+            result = canMergeBridgeCalls(config)
+                    ? mergedBridgeTranspile(fileName, swcSource, config)
+                    : swcTranspile(fileName, swcSource, config);
         } catch (Throwable swcFailure) {
             if (config.legacyFallback()) {
                 try {
@@ -90,29 +98,85 @@ public final class TypeScriptTranspiler {
             if (config.stripStaticModuleSyntax()) {
                 code = TypeScriptDeclarationStripper.stripExportStatements(code);
             }
-            if (config.transformTarget() != null) {
+            if (!result.syntaxLoweringApplied() && config.transformTarget() != null) {
                 code = transformJavaScript(fileName, code, config);
             }
             if (config.lowerRuntimeSyntax()) {
                 code = TypeScriptSyntaxStripper.stripPostEs2015Syntax(code);
             }
-            return new TypeScriptSourceTranspileResult(code, result.sourceMap(), false);
+            return new TypeScriptSourceTranspileResult(
+                    code, result.sourceMap(), false, result.syntaxLoweringApplied());
         } catch (Throwable postProcessFailure) {
             throw TypeScriptErrorReporter.transpileFailure(
                     fileName, source, "TypeScript post-processing", postProcessFailure);
         }
     }
 
+    /**
+     * Whether the TypeScript strip and the syntax lowering can share one bridge invocation.
+     *
+     * <p>Only when nothing has to run in Java between the two passes. {@link #transpileSource}
+     * interleaves specifier rewriting, static module syntax stripping, and top-level name isolation
+     * between them; none of those may be reordered, so a config that uses any of them keeps the two
+     * call sequence. Source maps are excluded because the merged response carries the lowering
+     * pass's (empty) map, while the two call path returns the transpile pass's map.</p>
+     */
+    private static boolean canMergeBridgeCalls(TypeScriptTranspileConfig config) {
+        if (config.transformTarget() == null
+                || config.rewriteTypeScriptModuleSpecifiers()
+                || config.stripStaticModuleSyntax()
+                || config.isolateTopLevelNames()
+                || config.sourceMap() != Swc4jSourceMapOption.None
+                || !isMergedBridgeCallEnabled()) {
+            return false;
+        }
+        return Swc4jWasmRuntime.getInstance().supportsTranspileAndTransform();
+    }
+
+    private static boolean isMergedBridgeCallEnabled() {
+        String value = System.getProperty(MERGED_BRIDGE_CALL_PROPERTY);
+        return value == null || value.isBlank() || Boolean.parseBoolean(value.trim());
+    }
+
+    /**
+     * Single crossing variant of {@link #swcTranspile} plus {@link #transformJavaScript}.
+     *
+     * <p>The bridge runs both passes with the exact option sets the two call sequence builds, so the
+     * emitted body is identical; only the intermediate JavaScript stays inside the WASM runtime.
+     * The {@code legacyFallback} path is not attempted here: this variant always has an SWC pass to
+     * fall back to in {@link #transpileSource}.</p>
+     */
+    private static TypeScriptSourceTranspileResult mergedBridgeTranspile(
+            String fileName,
+            String swcSource,
+            TypeScriptTranspileConfig config) throws Swc4jCoreException {
+        Swc4jTransformOutput output = Swc4jWasmRuntime.getInstance().transpileAndTransform(
+                swcSource,
+                transpileOptions(fileName, config),
+                transformOptions(fileName, config));
+        return new TypeScriptSourceTranspileResult(output.getCode(), null, false, true);
+    }
+
     public static TypeScriptSourceTranspileResult transpileKubeJsModuleBody(String fileName, String source) {
-        TypeScriptTranspileConfig config = TypeScriptTranspileConfig.KUBEJS.toBuilder()
-                .stripStaticModuleSyntax(false)
-                .isolateTopLevelNames(false)
-                .build();
-        TypeScriptSourceTranspileResult result = transpileSource(fileName, source, config);
+        TypeScriptSourceTranspileResult result = transpileSource(fileName, source, kubeJsModuleConfig());
         return new TypeScriptSourceTranspileResult(
                 TypeScriptCommonJsModuleTransformer.transform(result.code()),
                 result.sourceMap(),
-                result.legacyFallback());
+                result.legacyFallback(),
+                result.syntaxLoweringApplied());
+    }
+
+    /**
+     * Exact pipeline used by {@link #transpileKubeJsModuleBody(String, String)}.
+     *
+     * <p>The disk cache fingerprints this configuration, so both the transpiler and the cache must
+     * derive the effective config from this single place.</p>
+     */
+    public static TypeScriptTranspileConfig kubeJsModuleConfig() {
+        return TypeScriptTranspileConfig.KUBEJS.toBuilder()
+                .stripStaticModuleSyntax(false)
+                .isolateTopLevelNames(false)
+                .build();
     }
 
     public static boolean isTranspilableTypeScriptFile(String fileName) {
@@ -147,7 +211,12 @@ public final class TypeScriptTranspiler {
             String fileName,
             String source,
             TypeScriptTranspileConfig config) throws Swc4jCoreException {
-        Swc4jTranspileOptions options = new Swc4jTranspileOptions()
+        Swc4jTranspileOutput output = SWC4J.transpile(source, transpileOptions(fileName, config));
+        return new TypeScriptSourceTranspileResult(output.getCode(), output.getSourceMap(), false);
+    }
+
+    private static Swc4jTranspileOptions transpileOptions(String fileName, TypeScriptTranspileConfig config) {
+        return new Swc4jTranspileOptions()
                 .setSpecifier(toSpecifier(fileName))
                 .setMediaType(mediaTypeFor(fileName))
                 .setParseMode(config.parseMode())
@@ -155,15 +224,18 @@ public final class TypeScriptTranspiler {
                 .setSourceMap(config.sourceMap())
                 .setDecorators(config.decorators())
                 .setKeepComments(config.keepComments());
-        Swc4jTranspileOutput output = SWC4J.transpile(source, options);
-        return new TypeScriptSourceTranspileResult(output.getCode(), output.getSourceMap(), false);
     }
 
     private static String transformJavaScript(
             String fileName,
             String source,
             TypeScriptTranspileConfig config) throws Swc4jCoreException {
-        Swc4jTransformOptions options = new Swc4jTransformOptions()
+        Swc4jTransformOutput output = SWC4J.transform(source, transformOptions(fileName, config));
+        return output.getCode();
+    }
+
+    private static Swc4jTransformOptions transformOptions(String fileName, TypeScriptTranspileConfig config) {
+        return new Swc4jTransformOptions()
                 .setSpecifier(toSpecifier(outputFileName(fileName)))
                 .setMediaType(Swc4jMediaType.JavaScript)
                 .setParseMode(config.stripStaticModuleSyntax() ? Swc4jParseMode.Script : config.parseMode())
@@ -171,8 +243,6 @@ public final class TypeScriptTranspiler {
                 .setKeepComments(config.keepComments())
                 .setMinify(false)
                 .setTarget(config.transformTarget());
-        Swc4jTransformOutput output = SWC4J.transform(source, options);
-        return output.getCode();
     }
 
     private static String legacyTranspile(String fileName, String source, TypeScriptTranspileConfig config) {
