@@ -3,6 +3,9 @@ package com.pingsu.tsmodify.typescript;
 import com.pingsu.transpiler.Diagnostic;
 import com.pingsu.transpiler.TranspileOptions;
 import com.pingsu.transpiler.TranspileReport;
+import com.pingsu.transpiler.internal.parser.RecursiveDescentParser;
+import com.pingsu.transpiler.internal.parser.SourceParser;
+import com.pingsu.transpiler.syntax.Program;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -40,6 +43,16 @@ public final class TranslanguageCompiler {
             throw new CompilationFailure(report.result().diagnostics());
         }
         return report;
+    }
+
+    /** Keeps the pinned engine's parser API behind the same boundary as compilation. */
+    public static Program parseJavaScript(String fileName, String source) {
+        var parsed = new RecursiveDescentParser().parse(
+                fileName.replace('\\', '/'), source, SourceParser.Language.JAVASCRIPT);
+        if (!parsed.successful()) {
+            throw new CompilationFailure(parsed.diagnostics());
+        }
+        return parsed.program();
     }
 
     private static Properties loadIdentity() {

@@ -15,6 +15,7 @@ import com.pingsu.tsmodify.typescript.syntax.TypeScriptAutomaticSemicolonGuard;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptCommonJsModuleTransformer;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptEnumTransformer;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptFileScopeIsolator;
+import com.pingsu.tsmodify.typescript.syntax.TypeScriptRhinoCallbackAdapter;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptSyntaxStripper;
 
 import java.util.Arrays;
@@ -108,6 +109,7 @@ public final class TypeScriptTranspiler {
             }
             if (config.lowerRuntimeSyntax()) {
                 code = TypeScriptSyntaxStripper.stripPostEs2015Syntax(code);
+                code = TypeScriptRhinoCallbackAdapter.adapt(fileName, code);
             }
             String sourceMap = config.sourceMap() == SourceMapMode.EXTERNAL ? report.sourceMap().orElse(null) : null;
             return new TypeScriptSourceTranspileResult(code, sourceMap, false, config.transformTarget() != null);

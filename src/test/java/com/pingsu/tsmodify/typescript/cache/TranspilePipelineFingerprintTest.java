@@ -37,6 +37,15 @@ class TranspilePipelineFingerprintTest {
     }
 
     @Test
+    void invalidatesBodiesEmittedBeforeTheRhinoCallbackAdapter() {
+        String previous = TranspilePipelineFingerprint.describe().replace(
+                "\npostProcessing=" + TranspilePipelineFingerprint.POST_PROCESSING_VERSION,
+                "\npostProcessing=2");
+        assertNotEquals(TranspilePipelineFingerprint.value(),
+                TranspileCacheKey.sha256Hex(previous.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
     void changesForEveryPipelineField() {
         String baseline = fingerprintOf(TypeScriptTranspiler.kubeJsModuleConfig());
 

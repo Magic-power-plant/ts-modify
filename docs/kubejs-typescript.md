@@ -37,7 +37,15 @@ KubeJS runtime processing is ordered as follows:
 3. Lower JavaScript to ES5 using `KUBEJS_RHINO_2001_2_3_BUILD_6`, readable output,
    and `LexicalMode.LOOSE` (no full temporal-dead-zone emulation). The preset hoists
    loop declarations and respects Rhino's non-configurable function-name properties.
-4. Apply existing Rhino-specific syntax repairs. The standalone `KUBEJS` facade
+4. Apply Rhino-specific syntax repairs and adapt compiler-generated bound arrows
+   to ordinary forwarding functions for Java interface conversion. Translanguage
+   2.0.6 emits `.bind(this)`, whose Rhino `BoundFunction` cannot directly become
+   a KubeJS `IEventHandler` (reported as `Cannot convert Unknown`). The adapter
+   retains the bound receiver and preserves callback arity, return values and
+   thrown exceptions, while continuing to reject construction of arrows. It
+   parses generated JavaScript with the pinned engine, so comments, strings and
+   regular expressions are not rewritten. User `.bind(...)` calls and project
+   output are unchanged. The standalone `KUBEJS` facade
    also strips static module syntax and isolates file-local names; the module
    loader already supplies a separate scope, so it does not need these two steps.
 
@@ -46,6 +54,10 @@ and spread, optional chaining and loops are covered by regression tests. These
 transforms do not install arbitrary JavaScript platform APIs: scripts must still
 supply APIs such as `Promise`, and JSX uses `React.createElement` by default.
 Rhino mode rejects BigInt rather than emitting a call to an unavailable global.
+
+This callback repair changes the post-processing cache fingerprint. Previously
+cached output is automatically regenerated after updating TS Modify; manually
+deleting the transpile cache is unnecessary.
 
 KubeJS global bindings such as `ServerEvents`, `ItemEvents`, and `StartupEvents` remain visible inside modules. Use `export` / `import` for TypeScript modules, and use explicit assignments to shared objects such as `global` only when you intentionally want normal KubeJS global behavior.
 

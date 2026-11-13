@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.pingsu.transpiler.SourceMapMode;
+import dev.latvian.mods.kubejs.event.IEventHandler;
 import dev.latvian.mods.rhino.Context;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -45,6 +46,24 @@ class TranslanguageRuntimeTest {
                 for (let a = 0, b = a + 1; a < 3; a++) { total += b; }
                 var result = total + ":" + (callbacks[0]() + callbacks[2]());
                 """));
+    }
+
+    @Test
+    void convertsLoweredArrowsToKubeJsEventHandlers() throws Throwable {
+        String code = TypeScriptTranspiler.transpileKubeJsModuleBody("startup_scripts/event.ts", """
+                var handler = (event: any) => "registered";
+                """).code();
+        Context context = Context.enter();
+        var scope = context.initStandardObjects();
+        Object callback = context.evaluateString(scope, code + "\nhandler;", "event.ts", 1, null);
+        context.setTopCall(scope);
+        IEventHandler handler;
+        try {
+            handler = (IEventHandler) Context.jsToJava(context, callback, IEventHandler.class);
+        } finally {
+            context.setTopCall(null);
+        }
+        assertEquals("registered", handler.onEvent(null));
     }
 
     @Test
