@@ -44,7 +44,11 @@ KubeJS runtime processing is ordered as follows:
    retains the bound receiver and preserves callback arity, return values and
    thrown exceptions, while continuing to reject construction of arrows. It
    parses generated JavaScript with the pinned engine, so comments, strings and
-   regular expressions are not rewritten. User `.bind(...)` calls and project
+   regular expressions are not rewritten. Both direct functions and the anonymous
+   capture factories emitted for outer `const`/`let` bindings are supported,
+   including imported values and per-iteration loop captures. Only the directly
+   returned generated function is inspected; unrelated nested functions are not
+   treated as the factory result. User `.bind(...)` calls and project
    output are unchanged. The standalone `KUBEJS` facade
    also strips static module syntax and isolates file-local names; the module
    loader already supplies a separate scope, so it does not need these two steps.
@@ -58,6 +62,11 @@ Rhino mode rejects BigInt rather than emitting a call to an unavailable global.
 This callback repair changes the post-processing cache fingerprint. Previously
 cached output is automatically regenerated after updating TS Modify; manually
 deleting the transpile cache is unnecessary.
+
+The callback regression suite executes Java interface conversion and invocation,
+not just Rhino parsing. `test/callback_interop/kubejs/` also contains real startup
+and client script snapshots used to verify event registration and shared imports;
+these tests do not simulate Minecraft registry behavior.
 
 KubeJS global bindings such as `ServerEvents`, `ItemEvents`, and `StartupEvents` remain visible inside modules. Use `export` / `import` for TypeScript modules, and use explicit assignments to shared objects such as `global` only when you intentionally want normal KubeJS global behavior.
 

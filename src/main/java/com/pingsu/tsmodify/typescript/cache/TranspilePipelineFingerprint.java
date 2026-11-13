@@ -15,7 +15,7 @@ public final class TranspilePipelineFingerprint {
      * Bump whenever the Java post-processing pipeline changes in a way that can alter emitted
      * bodies: {@code typescript/syntax/*} and {@code TypeScriptCommonJsModuleTransformer}.
      */
-    public static final String POST_PROCESSING_VERSION = "3";
+    public static final String POST_PROCESSING_VERSION = "4";
 
     private static final String DEV_MOD_VERSION = "dev";
     private static final String VALUE = compute();
