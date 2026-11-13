@@ -1,15 +1,15 @@
 package com.pingsu.tsmodify.typescript;
 
-import com.caoccao.javet.swc4j.Swc4j;
-import com.caoccao.javet.swc4j.enums.Swc4jMediaType;
-import com.caoccao.javet.swc4j.enums.Swc4jParseMode;
-import com.caoccao.javet.swc4j.enums.Swc4jSourceMapOption;
-import com.caoccao.javet.swc4j.exceptions.Swc4jCoreException;
-import com.caoccao.javet.swc4j.options.Swc4jTransformOptions;
-import com.caoccao.javet.swc4j.options.Swc4jTranspileOptions;
-import com.caoccao.javet.swc4j.outputs.Swc4jTransformOutput;
-import com.caoccao.javet.swc4j.outputs.Swc4jTranspileOutput;
-import com.caoccao.javet.swc4j.wasm.Swc4jWasmRuntime;
+import com.pingsu.transpiler.CommentMode;
+import com.pingsu.transpiler.JavaScriptTarget;
+import com.pingsu.transpiler.LexicalMode;
+import com.pingsu.transpiler.MediaType;
+import com.pingsu.transpiler.ModuleKind;
+import com.pingsu.transpiler.OutputFormat;
+import com.pingsu.transpiler.OutputPreset;
+import com.pingsu.transpiler.SourceMapMode;
+import com.pingsu.transpiler.TranspileOptions;
+import com.pingsu.transpiler.TranspileReport;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptDeclarationStripper;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptAutomaticSemicolonGuard;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptCommonJsModuleTransformer;
@@ -17,10 +17,6 @@ import com.pingsu.tsmodify.typescript.syntax.TypeScriptEnumTransformer;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptFileScopeIsolator;
 import com.pingsu.tsmodify.typescript.syntax.TypeScriptSyntaxStripper;
 
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.nio.file.InvalidPathException;
-import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
@@ -30,13 +26,6 @@ import java.util.regex.Pattern;
 public final class TypeScriptTranspiler {
     private static final Pattern MODULE_SPECIFIER_PATTERN = Pattern.compile(
             "(\\bfrom\\s*|\\bimport\\s*\\(\\s*|\\brequire\\s*\\(\\s*|\\bimport\\s+)(['\"])([^'\"]+)(['\"])");
-    /**
-     * Rollback switch for the merged bridge call. Set to {@code false} to force the two call
-     * sequence, which is what the equivalence test compares against.
-     */
-    public static final String MERGED_BRIDGE_CALL_PROPERTY = "tsmodify.mergedTranspileCall";
-    private static final Swc4j SWC4J = new Swc4j();
-
     private TypeScriptTranspiler() {
     }
 
@@ -54,38 +43,45 @@ public final class TypeScriptTranspiler {
             String fileName,
             String source,
             TypeScriptTranspileConfig config) {
+        return transpileSource(fileName, source, config, false);
+    }
+
+    private static TypeScriptSourceTranspileResult transpileSource(
+            String fileName, String source, TypeScriptTranspileConfig config, boolean moduleBody) {
         if (!isTranspilableTypeScriptFile(fileName)) {
             return new TypeScriptSourceTranspileResult(source, null, false);
         }
 
-        String swcSource;
+        String prepared;
         try {
-            swcSource = config.guardAutomaticSemicolonHazards()
-                    ? TypeScriptAutomaticSemicolonGuard.guard(source)
-                    : source;
-        } catch (Throwable preProcessFailure) {
-            throw TypeScriptErrorReporter.transpileFailure(
-                    fileName, source, "TypeScript pre-processing", preProcessFailure);
+            prepared = config.guardAutomaticSemicolonHazards()
+                    ? TypeScriptAutomaticSemicolonGuard.guard(source) : source;
+        } catch (Throwable failure) {
+            throw TypeScriptErrorReporter.transpileFailure(fileName, source, "TypeScript pre-processing", failure);
         }
-        TypeScriptSourceTranspileResult result;
+        TranspileReport report;
         try {
-            result = canMergeBridgeCalls(config)
-                    ? mergedBridgeTranspile(fileName, swcSource, config)
-                    : swcTranspile(fileName, swcSource, config);
-        } catch (Throwable swcFailure) {
+            // Preserve syntax until the host has processed modules and file-local bindings.
+            report = TranslanguageCompiler.compile(fileName, prepared, options(fileName, config)
+                    .target(JavaScriptTarget.PRESERVE)
+                    .mediaType(mediaTypeFor(fileName))
+                    .module(config.moduleKind())
+                    .sourceMap(config.sourceMap())
+                    .build());
+        } catch (Throwable failure) {
             if (config.legacyFallback()) {
                 try {
                     return new TypeScriptSourceTranspileResult(legacyTranspile(fileName, source, config), null, true);
                 } catch (Throwable fallbackFailure) {
-                    throw TypeScriptErrorReporter.transpileFailure(
-                            fileName, source, "legacy fallback", fallbackFailure);
+                    fallbackFailure.addSuppressed(failure);
+                    throw TypeScriptErrorReporter.transpileFailure(fileName, source, "legacy fallback", fallbackFailure);
                 }
             }
-            throw TypeScriptErrorReporter.transpileFailure(fileName, source, "SWC transpilation", swcFailure);
+            throw TypeScriptErrorReporter.transpileFailure(fileName, source, "Translanguage transpilation", failure);
         }
 
         try {
-            String code = result.code();
+            String code = report.result().javaScript();
             if (config.rewriteTypeScriptModuleSpecifiers()) {
                 code = rewriteTypeScriptModuleSpecifiers(code);
             }
@@ -98,72 +94,43 @@ public final class TypeScriptTranspiler {
             if (config.stripStaticModuleSyntax()) {
                 code = TypeScriptDeclarationStripper.stripExportStatements(code);
             }
-            if (!result.syntaxLoweringApplied() && config.transformTarget() != null) {
-                code = transformJavaScript(fileName, code, config);
+            // ES5 cannot contain ESM. Keep the established runtime import/default/circular semantics
+            // by applying our CommonJS adapter before the JavaScript lowering pass.
+            if (moduleBody) {
+                code = TypeScriptCommonJsModuleTransformer.transform(code);
+            }
+            if (config.transformTarget() != null) {
+                code = TranslanguageCompiler.compile(fileName, code, options(fileName, config)
+                        .target(config.transformTarget())
+                        .mediaType(MediaType.JS)
+                        .module(moduleBody || config.stripStaticModuleSyntax() ? ModuleKind.SCRIPT : config.moduleKind())
+                        .build()).result().javaScript();
             }
             if (config.lowerRuntimeSyntax()) {
                 code = TypeScriptSyntaxStripper.stripPostEs2015Syntax(code);
             }
-            return new TypeScriptSourceTranspileResult(
-                    code, result.sourceMap(), false, result.syntaxLoweringApplied());
-        } catch (Throwable postProcessFailure) {
-            throw TypeScriptErrorReporter.transpileFailure(
-                    fileName, source, "TypeScript post-processing", postProcessFailure);
+            String sourceMap = config.sourceMap() == SourceMapMode.EXTERNAL ? report.sourceMap().orElse(null) : null;
+            return new TypeScriptSourceTranspileResult(code, sourceMap, false, config.transformTarget() != null);
+        } catch (Throwable failure) {
+            throw TypeScriptErrorReporter.transpileFailure(fileName, source, "TypeScript post-processing", failure);
         }
-    }
-
-    /**
-     * Whether the TypeScript strip and the syntax lowering can share one bridge invocation.
-     *
-     * <p>Only when nothing has to run in Java between the two passes. {@link #transpileSource}
-     * interleaves specifier rewriting, static module syntax stripping, and top-level name isolation
-     * between them; none of those may be reordered, so a config that uses any of them keeps the two
-     * call sequence. Source maps are excluded because the merged response carries the lowering
-     * pass's (empty) map, while the two call path returns the transpile pass's map.</p>
-     */
-    private static boolean canMergeBridgeCalls(TypeScriptTranspileConfig config) {
-        if (config.transformTarget() == null
-                || config.rewriteTypeScriptModuleSpecifiers()
-                || config.stripStaticModuleSyntax()
-                || config.isolateTopLevelNames()
-                || config.sourceMap() != Swc4jSourceMapOption.None
-                || !isMergedBridgeCallEnabled()) {
-            return false;
-        }
-        return Swc4jWasmRuntime.getInstance().supportsTranspileAndTransform();
-    }
-
-    private static boolean isMergedBridgeCallEnabled() {
-        String value = System.getProperty(MERGED_BRIDGE_CALL_PROPERTY);
-        return value == null || value.isBlank() || Boolean.parseBoolean(value.trim());
-    }
-
-    /**
-     * Single crossing variant of {@link #swcTranspile} plus {@link #transformJavaScript}.
-     *
-     * <p>The bridge runs both passes with the exact option sets the two call sequence builds, so the
-     * emitted body is identical; only the intermediate JavaScript stays inside the WASM runtime.
-     * The {@code legacyFallback} path is not attempted here: this variant always has an SWC pass to
-     * fall back to in {@link #transpileSource}.</p>
-     */
-    private static TypeScriptSourceTranspileResult mergedBridgeTranspile(
-            String fileName,
-            String swcSource,
-            TypeScriptTranspileConfig config) throws Swc4jCoreException {
-        Swc4jTransformOutput output = Swc4jWasmRuntime.getInstance().transpileAndTransform(
-                swcSource,
-                transpileOptions(fileName, config),
-                transformOptions(fileName, config));
-        return new TypeScriptSourceTranspileResult(output.getCode(), null, false, true);
     }
 
     public static TypeScriptSourceTranspileResult transpileKubeJsModuleBody(String fileName, String source) {
-        TypeScriptSourceTranspileResult result = transpileSource(fileName, source, kubeJsModuleConfig());
-        return new TypeScriptSourceTranspileResult(
-                TypeScriptCommonJsModuleTransformer.transform(result.code()),
-                result.sourceMap(),
-                result.legacyFallback(),
-                result.syntaxLoweringApplied());
+        return transpileSource(fileName, source, kubeJsModuleConfig(), true);
+    }
+
+    private static TranspileOptions.Builder options(String fileName, TypeScriptTranspileConfig config) {
+        TranspileOptions.Builder options = TranspileOptions.builder()
+                .decorators(config.decorators())
+                .comments(config.keepComments() ? CommentMode.ALL : CommentMode.NONE)
+                .format(OutputFormat.READABLE)
+                .sourceMapFile(outputFileName(fileName).replace('\\', '/'));
+        if (config.lowerRuntimeSyntax()) {
+            options.preset(OutputPreset.KUBEJS_RHINO_2001_2_3_BUILD_6)
+                    .lexicalMode(LexicalMode.LOOSE);
+        }
+        return options;
     }
 
     /**
@@ -207,44 +174,6 @@ public final class TypeScriptTranspiler {
         return fileName;
     }
 
-    private static TypeScriptSourceTranspileResult swcTranspile(
-            String fileName,
-            String source,
-            TypeScriptTranspileConfig config) throws Swc4jCoreException {
-        Swc4jTranspileOutput output = SWC4J.transpile(source, transpileOptions(fileName, config));
-        return new TypeScriptSourceTranspileResult(output.getCode(), output.getSourceMap(), false);
-    }
-
-    private static Swc4jTranspileOptions transpileOptions(String fileName, TypeScriptTranspileConfig config) {
-        return new Swc4jTranspileOptions()
-                .setSpecifier(toSpecifier(fileName))
-                .setMediaType(mediaTypeFor(fileName))
-                .setParseMode(config.parseMode())
-                .setModuleKind(config.moduleKind())
-                .setSourceMap(config.sourceMap())
-                .setDecorators(config.decorators())
-                .setKeepComments(config.keepComments());
-    }
-
-    private static String transformJavaScript(
-            String fileName,
-            String source,
-            TypeScriptTranspileConfig config) throws Swc4jCoreException {
-        Swc4jTransformOutput output = SWC4J.transform(source, transformOptions(fileName, config));
-        return output.getCode();
-    }
-
-    private static Swc4jTransformOptions transformOptions(String fileName, TypeScriptTranspileConfig config) {
-        return new Swc4jTransformOptions()
-                .setSpecifier(toSpecifier(outputFileName(fileName)))
-                .setMediaType(Swc4jMediaType.JavaScript)
-                .setParseMode(config.stripStaticModuleSyntax() ? Swc4jParseMode.Script : config.parseMode())
-                .setSourceMap(Swc4jSourceMapOption.None)
-                .setKeepComments(config.keepComments())
-                .setMinify(false)
-                .setTarget(config.transformTarget());
-    }
-
     private static String legacyTranspile(String fileName, String source, TypeScriptTranspileConfig config) {
         String transformed = TypeScriptDeclarationStripper.stripImportStatements(source);
         transformed = TypeScriptDeclarationStripper.removeTypeOnlyDeclarations(transformed);
@@ -260,18 +189,18 @@ public final class TypeScriptTranspiler {
         return transformed;
     }
 
-    private static Swc4jMediaType mediaTypeFor(String fileName) {
+    private static MediaType mediaTypeFor(String fileName) {
         String lower = lowerFileName(fileName);
         if (lower.endsWith(".tsx")) {
-            return Swc4jMediaType.Tsx;
+            return MediaType.TSX;
         }
         if (lower.endsWith(".mts")) {
-            return Swc4jMediaType.Mts;
+            return MediaType.MTS;
         }
         if (lower.endsWith(".cts")) {
-            return Swc4jMediaType.Cts;
+            return MediaType.CTS;
         }
-        return Swc4jMediaType.TypeScript;
+        return MediaType.TS;
     }
 
     private static String rewriteTypeScriptModuleSpecifiers(String source) {
@@ -323,18 +252,6 @@ public final class TypeScriptTranspiler {
             return path.substring(0, path.length() - ".ts".length()) + ".js" + suffix;
         }
         return specifier;
-    }
-
-    private static URL toSpecifier(String fileName) {
-        try {
-            return Path.of(fileName).toUri().toURL();
-        } catch (InvalidPathException | MalformedURLException e) {
-            try {
-                return new URL("file", "", "/" + fileName.replace('\\', '/').replace(" ", "%20"));
-            } catch (MalformedURLException malformedURLException) {
-                throw new TypeScriptTranspileException("Invalid TypeScript source path '" + fileName + "'", e);
-            }
-        }
     }
 
     private static String lowerFileName(String fileName) {

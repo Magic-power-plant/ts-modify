@@ -159,6 +159,10 @@ public final class TypeScriptErrorReporter {
 
     private static Position findPosition(Throwable cause, String sourceName) {
         for (Throwable current = cause; current != null; current = current.getCause()) {
+            if (current instanceof TranslanguageCompiler.CompilationFailure failure && !failure.diagnostics().isEmpty()) {
+                var diagnostic = failure.diagnostics().get(0);
+                return new Position(diagnostic.line(), diagnostic.column());
+            }
             String message = current.getMessage();
             if (message != null) {
                 Matcher words = LINE_COLUMN_WORDS_PATTERN.matcher(message);

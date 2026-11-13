@@ -1,20 +1,18 @@
 package com.pingsu.tsmodify.typescript;
 
-import com.caoccao.javet.swc4j.enums.Swc4jEsVersion;
-import com.caoccao.javet.swc4j.enums.Swc4jModuleKind;
-import com.caoccao.javet.swc4j.enums.Swc4jParseMode;
-import com.caoccao.javet.swc4j.enums.Swc4jSourceMapOption;
-import com.caoccao.javet.swc4j.options.Swc4jDecoratorsTranspileOption;
+import com.pingsu.transpiler.DecoratorMode;
+import com.pingsu.transpiler.JavaScriptTarget;
+import com.pingsu.transpiler.ModuleKind;
+import com.pingsu.transpiler.SourceMapMode;
 
 public final class TypeScriptTranspileConfig {
     public static final TypeScriptTranspileConfig KUBEJS = builder()
-            .parseMode(Swc4jParseMode.Module)
-            .moduleKind(Swc4jModuleKind.Esm)
-            .sourceMap(Swc4jSourceMapOption.None)
+            .moduleKind(ModuleKind.PRESERVE)
+            .sourceMap(SourceMapMode.NONE)
             .keepComments(true)
             .stripStaticModuleSyntax(true)
             .rewriteTypeScriptModuleSpecifiers(false)
-            .transformTarget(Swc4jEsVersion.ES5)
+            .transformTarget(JavaScriptTarget.ES5)
             .lowerRuntimeSyntax(true)
             .guardAutomaticSemicolonHazards(true)
             .isolateTopLevelNames(true)
@@ -24,9 +22,8 @@ public final class TypeScriptTranspileConfig {
             .build();
 
     public static final TypeScriptTranspileConfig PROJECT = builder()
-            .parseMode(Swc4jParseMode.Module)
-            .moduleKind(Swc4jModuleKind.Esm)
-            .sourceMap(Swc4jSourceMapOption.None)
+            .moduleKind(ModuleKind.PRESERVE)
+            .sourceMap(SourceMapMode.NONE)
             .keepComments(true)
             .stripStaticModuleSyntax(false)
             .rewriteTypeScriptModuleSpecifiers(true)
@@ -36,11 +33,10 @@ public final class TypeScriptTranspileConfig {
             .failFast(true)
             .build();
 
-    private final Swc4jParseMode parseMode;
-    private final Swc4jModuleKind moduleKind;
-    private final Swc4jSourceMapOption sourceMap;
-    private final Swc4jDecoratorsTranspileOption decorators;
-    private final Swc4jEsVersion transformTarget;
+    private final ModuleKind moduleKind;
+    private final SourceMapMode sourceMap;
+    private final DecoratorMode decorators;
+    private final JavaScriptTarget transformTarget;
     private final boolean keepComments;
     private final boolean stripStaticModuleSyntax;
     private final boolean rewriteTypeScriptModuleSpecifiers;
@@ -52,7 +48,6 @@ public final class TypeScriptTranspileConfig {
     private final boolean failFast;
 
     private TypeScriptTranspileConfig(Builder builder) {
-        parseMode = builder.parseMode;
         moduleKind = builder.moduleKind;
         sourceMap = builder.sourceMap;
         decorators = builder.decorators;
@@ -76,23 +71,19 @@ public final class TypeScriptTranspileConfig {
         return new Builder(this);
     }
 
-    public Swc4jParseMode parseMode() {
-        return parseMode;
-    }
-
-    public Swc4jModuleKind moduleKind() {
+    public ModuleKind moduleKind() {
         return moduleKind;
     }
 
-    public Swc4jSourceMapOption sourceMap() {
+    public SourceMapMode sourceMap() {
         return sourceMap;
     }
 
-    public Swc4jDecoratorsTranspileOption decorators() {
+    public DecoratorMode decorators() {
         return decorators;
     }
 
-    public Swc4jEsVersion transformTarget() {
+    public JavaScriptTarget transformTarget() {
         return transformTarget;
     }
 
@@ -133,11 +124,10 @@ public final class TypeScriptTranspileConfig {
     }
 
     public static final class Builder {
-        private Swc4jParseMode parseMode = Swc4jParseMode.Module;
-        private Swc4jModuleKind moduleKind = Swc4jModuleKind.Esm;
-        private Swc4jSourceMapOption sourceMap = Swc4jSourceMapOption.None;
-        private Swc4jDecoratorsTranspileOption decorators = Swc4jDecoratorsTranspileOption.LegacyTypeScript();
-        private Swc4jEsVersion transformTarget;
+        private ModuleKind moduleKind = ModuleKind.PRESERVE;
+        private SourceMapMode sourceMap = SourceMapMode.NONE;
+        private DecoratorMode decorators = DecoratorMode.LEGACY;
+        private JavaScriptTarget transformTarget;
         private boolean keepComments = true;
         private boolean stripStaticModuleSyntax;
         private boolean rewriteTypeScriptModuleSpecifiers = true;
@@ -152,7 +142,6 @@ public final class TypeScriptTranspileConfig {
         }
 
         private Builder(TypeScriptTranspileConfig config) {
-            parseMode = config.parseMode;
             moduleKind = config.moduleKind;
             sourceMap = config.sourceMap;
             decorators = config.decorators;
@@ -168,27 +157,22 @@ public final class TypeScriptTranspileConfig {
             failFast = config.failFast;
         }
 
-        public Builder parseMode(Swc4jParseMode parseMode) {
-            this.parseMode = requireNonNull(parseMode, "parseMode");
-            return this;
-        }
-
-        public Builder moduleKind(Swc4jModuleKind moduleKind) {
+        public Builder moduleKind(ModuleKind moduleKind) {
             this.moduleKind = requireNonNull(moduleKind, "moduleKind");
             return this;
         }
 
-        public Builder sourceMap(Swc4jSourceMapOption sourceMap) {
+        public Builder sourceMap(SourceMapMode sourceMap) {
             this.sourceMap = requireNonNull(sourceMap, "sourceMap");
             return this;
         }
 
-        public Builder decorators(Swc4jDecoratorsTranspileOption decorators) {
+        public Builder decorators(DecoratorMode decorators) {
             this.decorators = requireNonNull(decorators, "decorators");
             return this;
         }
 
-        public Builder transformTarget(Swc4jEsVersion transformTarget) {
+        public Builder transformTarget(JavaScriptTarget transformTarget) {
             this.transformTarget = transformTarget;
             return this;
         }

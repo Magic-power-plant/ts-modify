@@ -4,12 +4,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.caoccao.javet.swc4j.enums.Swc4jEsVersion;
-import com.caoccao.javet.swc4j.enums.Swc4jModuleKind;
-import com.caoccao.javet.swc4j.enums.Swc4jParseMode;
-import com.caoccao.javet.swc4j.enums.Swc4jSourceMapOption;
-import com.caoccao.javet.swc4j.wasm.Swc4jWasmRuntime;
-import com.caoccao.javet.swc4j.wasm.Swc4jWasmRuntimeStats;
+import com.pingsu.transpiler.DecoratorMode;
+import com.pingsu.transpiler.JavaScriptTarget;
+import com.pingsu.transpiler.ModuleKind;
+import com.pingsu.transpiler.SourceMapMode;
+import com.pingsu.tsmodify.typescript.TranslanguageCompiler;
 import com.pingsu.tsmodify.typescript.TypeScriptTranspileConfig;
 import com.pingsu.tsmodify.typescript.TypeScriptTranspiler;
 import java.nio.charset.StandardCharsets;
@@ -20,27 +19,12 @@ import org.junit.jupiter.api.Test;
 
 class TranspilePipelineFingerprintTest {
     @Test
-    void mirrorsTheVersionOfTheLoadedBridge() {
-        // The fingerprint must not initialize Swc4jWasmRuntime (that would cost the ~1.8 s module
-        // parse on every warm start), so the Java side mirrors the Rust VERSION constant. This test
-        // is what keeps the mirror honest.
-        assertEquals(TranspilePipelineFingerprint.SWC4J_BRIDGE_VERSION,
-                Swc4jWasmRuntime.getInstance().getVersion());
-    }
-
-    @Test
-    void doesNotLoadTheWasmRuntimeWhenTheRuntimeIsStillUnloaded() {
-        boolean loadedBefore = Swc4jWasmRuntimeStats.getLoadDurationNanos() > 0L;
-        long invocationsBefore = Swc4jWasmRuntimeStats.getInvocationCount();
-
-        TranspilePipelineFingerprint.value();
-        TranspilePipelineFingerprint.describe();
-
-        assertEquals(invocationsBefore, Swc4jWasmRuntimeStats.getInvocationCount());
-        if (!loadedBefore) {
-            assertEquals(0L, Swc4jWasmRuntimeStats.getLoadDurationNanos(),
-                    "computing the pipeline fingerprint must not load the WASM runtime");
-        }
+    void fingerprintsTheEngineArtifactWithoutCompiling() {
+        long before = TranslanguageCompiler.invocationCount();
+        String description = TranspilePipelineFingerprint.describe();
+        assertTrue(description.contains("engine=Translanguage:2.0.6"), description);
+        assertTrue(description.contains("engineSha256=" + TranslanguageCompiler.sha256()), description);
+        assertEquals(before, TranslanguageCompiler.invocationCount());
     }
 
     @Test
@@ -57,10 +41,10 @@ class TranspilePipelineFingerprintTest {
         String baseline = fingerprintOf(TypeScriptTranspiler.kubeJsModuleConfig());
 
         List<UnaryOperator<TypeScriptTranspileConfig.Builder>> variations = List.of(
-                builder -> builder.parseMode(Swc4jParseMode.Script),
-                builder -> builder.moduleKind(Swc4jModuleKind.Cjs),
-                builder -> builder.sourceMap(Swc4jSourceMapOption.Inline),
-                builder -> builder.transformTarget(Swc4jEsVersion.ES2015),
+                builder -> builder.decorators(DecoratorMode.STANDARD),
+                builder -> builder.moduleKind(ModuleKind.COMMONJS),
+                builder -> builder.sourceMap(SourceMapMode.INLINE),
+                builder -> builder.transformTarget(JavaScriptTarget.ES6),
                 builder -> builder.transformTarget(null),
                 builder -> builder.keepComments(false),
                 builder -> builder.stripStaticModuleSyntax(true),

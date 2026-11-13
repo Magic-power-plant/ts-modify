@@ -13,7 +13,7 @@ import java.util.Objects;
  * <ul>
  *   <li>the cache format version,</li>
  *   <li>the source media type extension ({@code .ts}, {@code .tsx}, {@code .mts}, {@code .cts}),
- *       because the SWC bridge parses each media type differently,</li>
+ *       because the compiler parses each media type differently,</li>
  *   <li>the {@link TranspilePipelineFingerprint} of the whole transpilation pipeline, and</li>
  *   <li>the SHA-256 of the exact source text that is transpiled.</li>
  * </ul>

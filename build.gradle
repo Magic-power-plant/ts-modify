@@ -117,14 +117,15 @@ mixin {
     config "${mod_id}.mixins.json"
 }
 
-def generatedSwc4jWasmResourcesDir = layout.buildDirectory.dir('generated/resources/swc4jWasm')
-
 sourceSets.main.resources {
     srcDir 'src/generated/resources'
-    srcDir generatedSwc4jWasmResourcesDir
 }
 
 repositories {
+    exclusiveContent {
+        forRepository { flatDir { dirs "docs" } }
+        filter { includeModule 'com.pingsu', 'Translanguage' }
+    }
     mavenCentral()
     maven {
         // saps.dev Maven (KubeJS and Rhino)
@@ -148,15 +149,8 @@ repositories {
     }
 }
 
-def chicoryVersion = '1.7.5'
-def swc4jWasmCrateDir = layout.projectDirectory.dir('wasm/swc4j-bridge')
-def swc4jWasmBinary = swc4jWasmCrateDir.file('target/wasm32-wasip1/release/swc4j_bridge.wasm')
-def cargoExecutable = providers.environmentVariable('CARGO')
-        .orElse(providers.environmentVariable('USERPROFILE').map { "${it}\\.cargo\\bin\\cargo.exe" })
-        .orElse('cargo')
-def skipSwc4jWasm = providers.gradleProperty('skipSwc4jWasm')
-        .map { it.toBoolean() }
-        .orElse(false)
+def translanguageVersion = providers.gradleProperty('translanguage_version').get()
+def translanguageJar = layout.projectDirectory.file("docs/Translanguage-${translanguageVersion}.jar")
 
 dependencies {
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
@@ -167,55 +161,39 @@ dependencies {
     implementation fg.deobf("dev.architectury:architectury-forge:${architectury_version}")
     implementation fg.deobf("curse.maven:probejs-585406:5227399")
 
-    // Forge loads exploded development mods in a separate module layer. Chicory
-    // must therefore be on ModLauncher's minecraft classpath, not only Gradle's
-    // application classpath. minecraftLibrary also extends implementation.
-    minecraftLibrary "com.dylibso.chicory:runtime:${chicoryVersion}"
-    minecraftLibrary "com.dylibso.chicory:wasi:${chicoryVersion}"
-    minecraftLibrary "com.dylibso.chicory:wasm:${chicoryVersion}"
-    minecraftLibrary "com.dylibso.chicory:log:${chicoryVersion}"
-    jarJar "com.dylibso.chicory:runtime:[${chicoryVersion},${chicoryVersion}]"
-    jarJar "com.dylibso.chicory:wasi:[${chicoryVersion},${chicoryVersion}]"
-    jarJar "com.dylibso.chicory:wasm:[${chicoryVersion},${chicoryVersion}]"
-    jarJar "com.dylibso.chicory:log:[${chicoryVersion},${chicoryVersion}]"
+    // minecraftLibrary makes the local pure-Java engine visible in Forge's development module layer.
+    minecraftLibrary "com.pingsu:Translanguage:${translanguageVersion}"
+    jarJar("com.pingsu:Translanguage:${translanguageVersion}") {
+        jarJar.ranged(it, "[${translanguageVersion},${translanguageVersion}]")
+    }
 
     testImplementation platform('org.junit:junit-bom:5.10.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
-tasks.register('compileSwc4jWasm', Exec) {
-    description = 'Compiles the SWC bridge to WebAssembly for the Java WASM runtime.'
-    group = 'build'
-    onlyIf { !skipSwc4jWasm.get() }
-    workingDir swc4jWasmCrateDir
-    commandLine cargoExecutable.get(), 'build', '--release', '--target', 'wasm32-wasip1'
-    inputs.file swc4jWasmCrateDir.file('Cargo.toml')
-    inputs.files fileTree(swc4jWasmCrateDir.dir('src')) {
-        include '**/*.rs'
-    }
-    outputs.file swc4jWasmBinary
-    doFirst {
-        if (!swc4jWasmCrateDir.asFile.isDirectory()) {
-            throw new GradleException("Missing SWC WASM crate: ${swc4jWasmCrateDir.asFile}")
+tasks.register('verifyTranslanguage') {
+    description = 'Verifies the pinned local Translanguage engine before compiling or packaging.'
+    group = 'verification'
+    inputs.file translanguageJar
+    inputs.property 'sha256', providers.gradleProperty('translanguage_sha256')
+    doLast {
+        def actual = java.security.MessageDigest.getInstance('SHA-256')
+                .digest(translanguageJar.asFile.bytes).encodeHex().toString()
+        if (actual != providers.gradleProperty('translanguage_sha256').get()) {
+            throw new GradleException("Translanguage checksum mismatch: ${translanguageJar.asFile}")
         }
     }
 }
 
-tasks.register('processSwc4jWasmResources', Copy) {
-    description = 'Copies the compiled SWC WebAssembly module into the main mod resources.'
-    group = 'build'
-    onlyIf { !skipSwc4jWasm.get() }
-    dependsOn tasks.named('compileSwc4jWasm')
-    from(swc4jWasmBinary)
-    into generatedSwc4jWasmResourcesDir.map { it.dir('swc4j') }
-    duplicatesStrategy = DuplicatesStrategy.FAIL
-}
+tasks.named('compileJava') { dependsOn 'verifyTranslanguage' }
 
 tasks.named('processResources', ProcessResources).configure {
-    dependsOn tasks.named('processSwc4jWasmResources')
+    dependsOn tasks.named('verifyTranslanguage')
 
     var replaceProperties = [
+            translanguage_version  : translanguageVersion,
+            translanguage_sha256   : providers.gradleProperty('translanguage_sha256').get(),
             minecraft_version      : minecraft_version,
             minecraft_version_range: minecraft_version_range,
             forge_version          : forge_version,
@@ -232,7 +210,7 @@ tasks.named('processResources', ProcessResources).configure {
 
     inputs.properties replaceProperties
 
-    filesMatching(['META-INF/mods.toml', 'pack.mcmeta']) {
+    filesMatching(['META-INF/mods.toml', 'pack.mcmeta', 'tsmodify/translanguage.properties']) {
         expand replaceProperties + [project: project]
     }
 }
@@ -263,6 +241,7 @@ tasks.named('build') {
 }
 
 tasks.named('jar', Jar).configure {
+    from(['LICENSE', 'THIRD_PARTY_NOTICES.md']) { into 'META-INF/tsmodify' }
     // Defensive: the agent classes live in their own source set and must never leak into the mod jar.
     exclude 'com/pingsu/tsmodify/agent/**'
 
@@ -271,7 +250,7 @@ tasks.named('jar', Jar).configure {
                     "Specification-Vendor"    : mod_authors,
                     "Specification-Version"   : "1",
                     "Implementation-Title"    : project.name,
-                    "Implementation-Version"  : project.jar.archiveVersion,
+                    "Implementation-Version"  : mod_version,
                     "Implementation-Vendor"   : mod_authors,
                     "Implementation-Timestamp": new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")])
     }
@@ -282,6 +261,7 @@ tasks.named('jar', Jar).configure {
 jarJar.enable()
 
 tasks.named('jarJar').configure {
+    from(['LICENSE', 'THIRD_PARTY_NOTICES.md']) { into 'META-INF/tsmodify' }
     finalizedBy 'reobfJarJar'
 }
 
@@ -350,7 +330,7 @@ tasks.register('rhinoBaselineStressTest', JavaExec) {
 // and gives the A/B counterpart for the JFR comparison.
 tasks.register('transpileCacheBenchmark', JavaExec) {
     group = 'verification'
-    description = 'Measures the KubeJS transpile disk cache against the raw bridge transpilation path.'
+    description = 'Measures the KubeJS transpile disk cache against the uncached Translanguage path.'
     dependsOn tasks.named('testClasses')
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.pingsu.tsmodify.typescript.benchmark.TranspileCacheBenchmarkMain'
@@ -371,16 +351,4 @@ tasks.register('transpileCacheBenchmark', JavaExec) {
     if (providers.gradleProperty('transpileCacheBenchmarkNoCache').isPresent()) {
         systemProperty 'tsmodify.transpileCache', 'false'
     }
-}
-
-// W3 evidence: how much of a transpilation pass the second WASM bridge crossing costs, with a
-// median over repeated passes. Byte equivalence of the two variants is asserted by
-// TranspileBridgeMergeTest instead.
-tasks.register('transpileBridgeBenchmark', JavaExec) {
-    group = 'verification'
-    description = 'Measures the merged single crossing SWC bridge call against the two call sequence.'
-    dependsOn tasks.named('testClasses')
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'com.pingsu.tsmodify.typescript.benchmark.TranspileBridgeBenchmarkMain'
-    outputs.upToDateWhen { false }
 }

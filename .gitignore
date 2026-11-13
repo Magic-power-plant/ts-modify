@@ -21,3 +21,8 @@ hs_err_pid*
 run
 /swc4j/
 /Javet/
+
+# Regenerable stress corpus and local run logs
+/test/rhino-stress-scripts/
+/logs/
+/forge-installer.jar.log

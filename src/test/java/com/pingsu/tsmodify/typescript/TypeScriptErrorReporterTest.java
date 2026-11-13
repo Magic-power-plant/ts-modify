@@ -13,10 +13,10 @@ class TypeScriptErrorReporterTest {
         TypeScriptTranspileException failure = TypeScriptErrorReporter.transpileFailure(
                 "server_scripts/broken.ts",
                 source,
-                "SWC transpilation",
+                "Translanguage transpilation",
                 new IllegalArgumentException("Unexpected token at 2:15"));
 
-        assertEquals("SWC transpilation", failure.context().phase());
+        assertEquals("Translanguage transpilation", failure.context().phase());
         assertEquals("server_scripts/broken.ts", failure.context().sourceName());
         assertEquals(2, failure.context().line());
         assertEquals(15, failure.context().column());

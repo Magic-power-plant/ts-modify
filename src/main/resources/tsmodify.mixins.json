@@ -12,7 +12,8 @@
     "EventHandlerContainerMixin",
     "ProbeJSClassInfoMixin",
     "ForgeFlowingFluidMixin",
-    "ArchitecturyFlowingFluidMixin"
+    "ArchitecturyFlowingFluidMixin",
+    "ConsoleJSMixin"
   ],
   "client": [
   ],

@@ -2,7 +2,7 @@
 
 TS Modify 是一个面向 Minecraft Forge 1.20.1 / KubeJS 的辅助 Mod，目标是在不改变 KubeJS 常规脚本目录和加载流程的前提下，让 KubeJS 脚本能够使用 TypeScript 编写，并补充 KubeJS 流体配方处理中对流体标签输入的支持。
 
-本项目当前的 Mod ID 为 `tsmodify`，版本为 `0.1`，许可证为 Apache License 2.0。
+本项目当前的 Mod ID 为 `tsmodify`，版本见 `gradle.properties`（当前 `0.94`），许可证为 Apache License 2.0。
 
 ## 项目目的
 
@@ -20,7 +20,7 @@ TS Modify 解决的是这个运行时兼容问题：让整合包或脚本开发�
 - `.d.ts`、`.d.mts`、`.d.cts` 声明文件不参与执行；
 - `.ts`、`.tsx`、`.mts`、`.cts` 会被转译。
 
-运行时转译的主路径使用本项目内 vendored 的 `swc4j` Java API 子集，并通过纯 Java 的 Chicory WebAssembly 运行时调用 `wasm/swc4j-bridge` 编译出的 `swc4j_bridge.wasm`。该 WASM 桥接层基于 Rust `deno_ast` / SWC 能力完成 TypeScript 解析、转译和 JavaScript 目标版本转换。
+运行时转译使用本地 `docs/Translanguage-2.0.6.jar`。Translanguage 是纯 Java 17 引擎，由 Forge Jar-in-Jar 随 Mod 一起分发；构建会校验 `gradle.properties` 中锁定的 SHA-256。无需 Rust、Cargo、WebAssembly 或平台相关 native library。
 
 针对 KubeJS 运行环境，转译后还会执行以下兼容处理：
 
@@ -28,7 +28,7 @@ TS Modify 解决的是这个运行时兼容问题：让整合包或脚本开发�
 - 为每个 `.ts` 文件建立独立模块作用域，减少不同脚本文件之间的辅助变量和函数名冲突；
 - 在同一脚本域内支持相对路径模块引用，例如 `server_scripts` 内 import `server_scripts` 内的文件；
 - 支持 `kubejs/shared_scripts` 作为 server/client 都可读取的共享源码目录，模块会在各自脚本上下文中分别执行和缓存；
-- 输出目标为 ES2015，并降低部分 Rhino 不兼容的新语法，例如可选链；
+- 输出目标为 ES5，使用 Translanguage 的 KubeJS/Rhino 预设处理循环初始化、函数名属性和类降级，并保留现有兼容性后处理；
 - 在链式调用后接 TypeScript 类型断言的场景中补充分号保护，避免转译前后语义被错误拼接。
 - ProbeJS 生成声明时，如果某个 Mod 的泛型父类或接口引用了当前环境缺失的可选 API，会退回原始类型元数据继续生成，避免整次 dump 中断并保留 `Java.loadClass(...)` 已捕获类的声明。
 
@@ -108,26 +108,31 @@ const flags = BYTE.array([1, 0, 1])
 .\gradlew.bat runClient
 ```
 
-构建可运行 Jar 时，`processResources` 会依赖 `compileSwc4jWasm`，该任务需要本机安装 Rust Cargo，并安装 `wasm32-wasip1` target。它会把 `wasm/swc4j-bridge` 编译为 `swc4j/swc4j_bridge.wasm` 资源并打入 Mod。
-
-如果只需要做 Java 编译检查，可以使用：
+构建只需 JDK 17、Gradle Wrapper 和项目的 Forge/KubeJS 依赖。请保留本地引擎
+`docs/Translanguage-2.0.6.jar`；版本和 SHA-256 由 `gradle.properties` 管理。
+`verifyTranslanguage` 在编译和资源处理前验证该文件，防止同版本二进制被意外替换。
 
 ```powershell
-.\gradlew.bat compileJava -PskipSwc4jWasm=true
+.\gradlew.bat --no-daemon compileJava
+.\gradlew.bat --no-daemon build
 ```
 
-这个参数会跳过 WASM 构建，但不会生成可用于 SWC 运行时转译的完整资源。
+发行时使用 `build/libs/tsmodify-<版本>-all.jar`，其中包含完整的 Translanguage JAR
+及其原始许可证和第三方声明。无 `-all` 后缀的开发 JAR 不内嵌引擎。
+旧 `compileSwc4jWasm`、`transpileBridgeBenchmark` 任务及 `skipSwc4jWasm` 属性已移除。
+
+构建仅使用当前引擎，历史文档和参考文件继续保留。`build/` 可通过 `clean` 再生成；
+大规模压力语料 `test/rhino-stress-scripts/` 可通过
+`scripts/generate-rhino-stress-corpus.ps1` 再生成，不纳入版本控制。
+`run/` 中的世界、配置和脚本以及个人 `.idea/` 配置不属于清理目标。
 
 ## 使用到的其他项目代码
 
 完整第三方说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。当前仓库中与第三方代码直接相关的部分包括：
 
-- `src/main/java/com/caoccao/javet/swc4j/`：vendored / adapted 的 `swc4j` Java API 子集，来源为 `https://github.com/caoccao/swc4j`，许可证为 Apache License 2.0。源码文件保留了上游版权头。本项目修改其 native 调用路径，使其通过 `Swc4jWasmRuntime` 调用 WASM 桥，而不是加载平台相关 JNI native library。
-- `swc4j/`：`swc4j` 的参考 checkout，用于对照上游源码和行为，来源为 `https://github.com/caoccao/swc4j`，许可证为 Apache License 2.0。
-- `Javet/`：Javet 的参考 checkout，来源为 `https://github.com/caoccao/Javet`，许可证为 Apache License 2.0。
-- `wasm/swc4j-bridge/`：本项目的 Rust / WASM 桥接层，依赖 `deno_ast`、SWC 相关 crates、`anyhow`、`base64`、`serde`、`serde_json` 等 Rust crates。具体版本记录在 `wasm/swc4j-bridge/Cargo.lock` 中。
-- 构建产物通过 Forge `jarJar` 打包 Chicory `runtime`、`wasi`、`wasm`、`log` 1.7.5 模块，用于在纯 Java 环境中运行 WASM。Chicory 来源为 `https://github.com/dylibso/chicory`，许可证为 Apache License 2.0。
-
+- `docs/Translanguage-2.0.6.jar`：Translanguage 2.0.6，MIT License，Copyright (c) 2026 gchdljsygch。原始 `META-INF/LICENSE` 和 `META-INF/THIRD_PARTY_NOTICES.md` 保留在嵌套 JAR 中。
+- 本次迁移已移除 vendored swc4j 源码、Rust/WASM 桥和 Chicory 打包依赖。
+- 个人 `Javet/` 等参考 checkout 不参与构建或分发。
 项目还依赖 Minecraft Forge、KubeJS、Rhino、Architectury、ProbeJS、SpongePowered Mixin、JUnit 以及它们的传递依赖。这些依赖不因本项目的 Apache License 2.0 而被重新授权，重新分发时应遵守各自上游项目的许可证、条款和 Minecraft/Forge/KubeJS 生态的分发规则。
 
 ## 许可证

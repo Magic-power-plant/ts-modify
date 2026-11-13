@@ -10,49 +10,25 @@ relicense third-party projects. Third-party code, libraries, assets, tools, and
 Minecraft/Forge/KubeJS dependencies remain subject to their own licenses and
 terms.
 
-## Vendored or Adapted Source
+## Bundled Runtime Library
 
-- swc4j source code under `src/main/java/com/caoccao/javet/swc4j/`
-  - Copyright: caoccao.com Sam Cao and contributors
-  - License: Apache License, Version 2.0
-  - Source: https://github.com/caoccao/swc4j
-  - Notes: Source files keep their original Apache-2.0 copyright headers. TS Modify
-    changes are additive and limited to the WASM integration this project needs:
-    `Swc4jWasmRuntime` publishes its module load cost and bridge round trip count
-    through `Swc4jWasmRuntimeStats` (a TS Modify addition carrying the same
-    Apache-2.0 header), prefers the `swc4j_transpile_and_transform` bridge export
-    when it is present, and otherwise degrades to the original two call sequence.
+TS Modify bundles the unmodified `docs/Translanguage-2.0.6.jar` through Forge
+Jar-in-Jar. The version and SHA-256 are pinned in `gradle.properties` and checked
+by `verifyTranslanguage` before compilation and packaging.
 
-- swc4j reference checkout under `swc4j/`
-  - Copyright: caoccao.com Sam Cao and contributors
-  - License: Apache License, Version 2.0
-  - Source: https://github.com/caoccao/swc4j
+- Library: Translanguage 2.0.6
+- Copyright: Copyright (c) 2026 gchdljsygch
+- License: MIT License (the complete license is `META-INF/LICENSE` inside the JAR)
+- SHA-256: `40ff977493cbaac411c09f5f263c5c2974159fff501f7dad3515491c358ca8c4`
+- Notices: `META-INF/THIRD_PARTY_NOTICES.md` inside the JAR, preserved verbatim
+- The JAR is a pure-Java library. Its notices distinguish reference/test-only
+  ANTLR, Closure, Acorn and documentation assets from production dependencies;
+  those components are not separately bundled by TS Modify.
 
-- Javet reference checkout under `Javet/`
-  - Copyright: caoccao.com Sam Cao and contributors
-  - License: Apache License, Version 2.0
-  - Source: https://github.com/caoccao/Javet
-
-## Bundled Runtime Libraries
-
-The Gradle build uses `jarJar` to bundle the following Chicory modules:
-
-- `com.dylibso.chicory:runtime:1.7.5`
-- `com.dylibso.chicory:wasi:1.7.5`
-- `com.dylibso.chicory:wasm:1.7.5`
-- `com.dylibso.chicory:log:1.7.5`
-
-These modules are third-party software from the Chicory project.
-
-- License: Apache License, Version 2.0
-- Source: https://github.com/dylibso/chicory
-
-## Rust and WebAssembly Dependencies
-
-The WebAssembly bridge in `wasm/swc4j-bridge/` depends on Rust crates recorded
-in `wasm/swc4j-bridge/Cargo.lock`, including `deno_ast`, SWC crates, `anyhow`,
-`base64`, `serde`, and `serde_json`. Those crates remain subject to their own
-published crate licenses and notices.
+The former vendored swc4j source, Rust/SWC WebAssembly bridge, and Chicory
+runtime libraries have been removed from the product. Ignored personal reference
+checkouts, if present, are not build inputs or distributed components and retain
+their own upstream licenses.
 
 ## Minecraft Modding Dependencies
 

@@ -343,7 +343,7 @@ final class TypeScriptSourceScanner {
      *
      * <p>Only grouping characters that are unambiguous in the inputs this runs on are tracked:
      * parentheses, brackets, and braces. Angle brackets are deliberately <em>not</em> treated as
-     * nesting. The module rewrite runs on post-SWC JavaScript, where {@code <} is the less-than
+     * nesting. The module rewrite runs on transpiled JavaScript, where {@code <} is the less-than
      * operator, and counting it as a TypeScript type-argument opener made an ordinary comparison
      * such as {@code input < 0} keep the nesting depth open until some later {@code >}. The
      * statement then swallowed the following declaration, whose {@code export} keyword was never

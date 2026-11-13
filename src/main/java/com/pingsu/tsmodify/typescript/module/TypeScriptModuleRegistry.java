@@ -78,7 +78,7 @@ public final class TypeScriptModuleRegistry {
 
         String modulePath = normalizeScriptPath(scriptTypeName, fileName);
         String moduleId = moduleId(namespace, modulePath);
-        String source = normalizeLineEndings(String.join("\n", sourceLines));
+        String source = String.join("\n", sourceLines);
         register(domain, moduleId, modulePath, transpileModuleBody(modulePath, source));
 
         List<String> entryLines = new ArrayList<>();
@@ -236,7 +236,7 @@ public final class TypeScriptModuleRegistry {
         }
 
         try {
-            String source = normalizeLineEndings(Files.readString(normalizedSource, StandardCharsets.UTF_8));
+            String source = Files.readString(normalizedSource, StandardCharsets.UTF_8);
             String sourceName = parsed.shared()
                     ? SHARED_FOLDER + "/" + parsed.path()
                     : parsed.path();
@@ -251,10 +251,13 @@ public final class TypeScriptModuleRegistry {
      *
      * <p>Both call sites ({@link #preload} and {@link #loadSourceFromDisk}) must funnel through
      * here so that the disk cache and its metrics cover every transpilation and so that the source
-     * text hashed for the cache key is byte-for-byte the text handed to the SWC bridge.</p>
+     * text hashed for the cache key is byte-for-byte the text handed to the compiler. The text is
+     * canonicalized first, because the two call sites disagree about line endings and the trailing
+     * terminator before they get here.</p>
      */
-    private static String transpileModuleBody(String sourceName, String source) {
+    private static String transpileModuleBody(String sourceName, String rawSource) {
         TranspileDiskCache cache = TranspileDiskCache.shared();
+        String source = canonicalSourceText(rawSource);
         byte[] sourceBytes = source.getBytes(StandardCharsets.UTF_8);
         long startNanos = System.nanoTime();
         Optional<String> cached = cache.lookup(sourceName, sourceBytes);
@@ -273,18 +276,25 @@ public final class TypeScriptModuleRegistry {
     }
 
     /**
-     * Collapses CRLF to LF before hashing and transpiling.
+     * Canonical text of one physical script, shared by every call site.
      *
-     * <p>KubeJS hands {@link #preload} lines read from a reader, so that path never contains a
-     * carriage return, while {@link #loadSourceFromDisk} reads raw file bytes. Normalizing both
-     * lets one physical file map to exactly one cache entry regardless of the path that reached
-     * it, and keeps the cache key and the transpiled text in agreement.</p>
+     * <p>KubeJS hands {@link #preload} the script's lines, so {@code String.join("\n", lines)} drops
+     * the file's trailing line terminator, while {@link #loadSourceFromDisk} reads raw file bytes and
+     * keeps it. Hashing either shape as it arrives gives one physical file two cache keys: the file is
+     * transpiled and cached twice, paying the compilation cost again. Collapsing every line ending to
+     * LF and dropping the trailing
+     * terminators makes both shapes identical, which keeps the cache key and the transpiled text in
+     * agreement while preserving the documented one-entry-per-file invariant.</p>
      */
-    private static String normalizeLineEndings(String source) {
-        if (source.indexOf('\r') < 0) {
-            return source;
+    static String canonicalSourceText(String source) {
+        String normalized = source.indexOf('\r') < 0
+                ? source
+                : source.replace("\r\n", "\n").replace('\r', '\n');
+        int end = normalized.length();
+        while (end > 0 && normalized.charAt(end - 1) == '\n') {
+            end--;
         }
-        return source.replace("\r\n", "\n").replace('\r', '\n');
+        return end == normalized.length() ? normalized : normalized.substring(0, end);
     }
 
     private static List<String> candidatePaths(String path) {

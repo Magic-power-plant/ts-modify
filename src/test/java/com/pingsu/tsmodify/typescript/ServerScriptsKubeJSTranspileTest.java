@@ -38,6 +38,8 @@ class ServerScriptsKubeJSTranspileTest {
                         source,
                         TypeScriptTranspileConfig.KUBEJS);
                 validateTranspiledScript(context, relativeFileName, result.code(), failures);
+                TypeScriptSourceTranspileResult module = TypeScriptTranspiler.transpileKubeJsModuleBody(relativeFileName, source);
+                validateTranspiledScript(context, relativeFileName + " (module)", module.code(), failures);
             } catch (RuntimeException e) {
                 failures.add(relativeFileName + ": TypeScript conversion failed: " + e.getMessage());
             }

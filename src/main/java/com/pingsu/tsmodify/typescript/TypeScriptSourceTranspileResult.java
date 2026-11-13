@@ -33,12 +33,7 @@ public final class TypeScriptSourceTranspileResult {
         return legacyFallback;
     }
 
-    /**
-     * Whether {@code code} has already been lowered to {@code transformTarget} by the bridge.
-     *
-     * <p>The merged bridge call performs the syntax lowering together with the TypeScript strip, so
-     * the caller must not run the lowering pass a second time.</p>
-     */
+    /** Whether the requested JavaScript target lowering has been applied. */
     public boolean syntaxLoweringApplied() {
         return syntaxLoweringApplied;
     }

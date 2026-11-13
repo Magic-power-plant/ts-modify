@@ -22,26 +22,37 @@ It retains no JavaScript scope, module export, or function instance, so server
 and client contexts remain separate. The first load still compiles normally;
 this is a reload optimization, not a claim about every Rhino execution path.
 
-The main transpilation path is backed by `swc4j`, using SWC's TypeScript parser and emitter instead of the old hand-written TypeScript stripper. Runtime mode supports the TypeScript-family script extensions `.ts`, `.tsx`, `.mts`, and `.cts`, excluding declaration files.
+The main transpilation path uses the pinned pure-Java `Translanguage 2.0.6` library.
+Runtime mode supports `.ts`, `.tsx`, `.mts`, and `.cts`, excluding declaration files.
+The `KUBEJS` and `PROJECT` configurations remain separate.
 
-KubeJS runtime mode also applies KubeJS-specific compatibility steps after SWC emits JavaScript:
+KubeJS runtime processing is ordered as follows:
 
-- static `import` and `export` declarations are transformed to TS Modify's runtime module loader
-- every TypeScript file runs in a CommonJS-style module scope with its own `exports` object and module cache
-- relative imports are supported inside the same script domain, such as `server_scripts` importing another `server_scripts` file
-- extensionless relative imports are recommended, for example `./global` instead of `./global.ts`, because TypeScript and IDE language services reject `.ts` specifiers unless `allowImportingTsExtensions` is enabled
-- `kubejs/shared_scripts` is available as shared source for server and client scripts; modules from that directory execute separately in each script context
-- output targets ES5 for KubeJS Rhino; SWC's ES2015 compatibility pass lowers default parameters, arrow functions, block-scoped declarations, templates, destructuring, and related ES2015 syntax before the KubeJS-specific post-processing steps
-- ES2018 object rest and object spread are lowered before the ES2015 pass, so patterns such as `const { x, ...rest } = value` and literals such as `{ ...rest, x }` do not leave Rhino-incompatible `...` syntax behind
-- class fields are lowered before the ES2015 class transform, which deliberately ignores them: `static created: string[] = []` becomes a `_define_property(...)` assignment after the class and instance fields become constructor assignments. Private `#name` fields are emitted as mangled ordinary properties, because an ES5 target has no private names
-- `var` declarations inside a `try` block are lifted to just before that block. KubeJS's Rhino loses the visibility of such a variable when an abrupt completion (`break`, `return`) runs the inlined `finally`, which is exactly the shape SWC's ES5 `for...of` lowering produces when it calls `iterator.return()` during cleanup
-- the ES5 target is implemented in the local Rust/WASM bridge, not by the Java emitter flag alone: the bridge runs SWC's compatibility pass inside the same `GLOBALS` / helper context used by SWC transforms
+1. Guard ambiguous automatic-semicolon boundaries, then erase TypeScript with the
+   engine's `PRESERVE` target and legacy decorators.
+2. Convert static imports/exports with the existing CommonJS adapter. Relative
+   imports stay inside the script domain or `shared_scripts`; shared sources still
+   execute separately in server and client runtimes. Extensionless imports such as
+   `./global` remain recommended for TypeScript language-service compatibility.
+3. Lower JavaScript to ES5 using `KUBEJS_RHINO_2001_2_3_BUILD_6`, readable output,
+   and `LexicalMode.LOOSE` (no full temporal-dead-zone emulation). The preset hoists
+   loop declarations and respects Rhino's non-configurable function-name properties.
+4. Apply existing Rhino-specific syntax repairs. The standalone `KUBEJS` facade
+   also strips static module syntax and isolates file-local names; the module
+   loader already supplies a separate scope, so it does not need these two steps.
+
+Default parameters, arrows, classes/fields, destructuring, templates, object rest
+and spread, optional chaining and loops are covered by regression tests. These
+transforms do not install arbitrary JavaScript platform APIs: scripts must still
+supply APIs such as `Promise`, and JSX uses `React.createElement` by default.
+Rhino mode rejects BigInt rather than emitting a call to an unavailable global.
 
 KubeJS global bindings such as `ServerEvents`, `ItemEvents`, and `StartupEvents` remain visible inside modules. Use `export` / `import` for TypeScript modules, and use explicit assignments to shared objects such as `global` only when you intentionally want normal KubeJS global behavior.
 
 ## Transpile Disk Cache
 
-Transpiling a TypeScript module body crosses the Rust/WASM bridge twice, which is the most expensive part of a KubeJS script load. TS Modify therefore keeps the emitted JavaScript on disk so a warm start can register modules without touching the WASM runtime at all.
+TS Modify caches emitted module bodies on disk. A cache hit avoids both pure-Java
+compiler passes and the host compatibility processing; no WASM runtime is loaded.
 
 Cache location:
 
@@ -51,26 +62,29 @@ Cache location:
 
 One file per emitted module body, UTF-8, no source map, no index file. Key identity is content addressed:
 
-- the exact transpiled source text (SHA-256), after CRLF normalisation, and
+- the exact transpiled source text (SHA-256), after normalising line endings and removing trailing line terminators, and
 - the source media type extension (`.ts`, `.tsx`, `.mts`, `.cts`), and
-- a pipeline fingerprint covering every transpiler option actually used for KubeJS module bodies, the WASM bridge ABI version (`2.2.0`), the Java post-processing version, the mod version, and the cache format version.
+- a pipeline fingerprint covering every transpiler option actually used for KubeJS module bodies, the Translanguage version and exact artifact SHA-256, the Java post-processing version, the mod version, and the cache format version.
 
-The pipeline fingerprint makes cross-version reuse impossible: upgrading the mod, the bridge, or the post-processing pipeline changes the fingerprint, so every entry misses instead of returning code produced by different software. Player edits change the content hash and are picked up on the next load. A key that ignores the source directory means one file has exactly one entry no matter which path named it, which is safe because the emitted body depends only on the extension and the content.
+The pipeline fingerprint makes cross-version reuse impossible: upgrading the mod, the engine, or the post-processing pipeline changes the fingerprint, so every entry misses instead of returning code produced by different software. Player edits change the content hash and are picked up on the next load. A key that ignores the source directory means one file has exactly one entry no matter which path named it, which is safe because the emitted body depends only on the extension and the content.
 
 The cache is a performance feature, never a correctness dependency. Unreadable, truncated, empty, or non-UTF-8 entries are discarded and treated as a miss; every cache read and write failure falls back to transpiling. Writes go through a uniquely named temporary file and are published with an atomic move, so a concurrent reader can never observe a half-written body. Capacity defaults to 4096 entries and is trimmed least-recently-used first, where reads refresh an entry's recency.
 
 Every reload starts a new measurement session. Three points emit the INFO summary: the KubeJS cache-clear hook, a Forge `ServerStartedEvent` listener (server scripts are transpiled long before any reload, so this is what makes a normal server run visible), and JVM shutdown. Individual files are reported at DEBUG:
 
 ```text
-[TS Modify] transpiled 45 TypeScript file(s) in 5.18 s (session 12.90 s, cache 0/45 hit, wasm-load 1.80 s, 90 bridge call(s), 512.0 KiB source, trigger: server started)
-[TS Modify] transpiled 45 TypeScript file(s) in 120 ms (session 9.77 s, cache 45/45 hit, wasm-load not needed, 0 bridge call(s), 512.0 KiB source, trigger: server started)
+[TS Modify] transpiled <files> TypeScript file(s) in <compile time> (session <elapsed>, cache <hits>/<files> hit, Translanguage, <calls> compiler call(s), <bytes> source, trigger: server started)
 ```
 
-The first duration is the accumulated cost of the transpilation attempts themselves. The `session` span additionally covers everything between the first transpile and the flush, so in a game run it includes unrelated startup work such as world and datapack loading; compare `cache` hit counts, `wasm-load`, and bridge calls across runs instead of reading the session span as transpile time. Serving entries from the cache also means the WASM runtime is never initialized, which shows up as `wasm-load not needed` and as zero Chicory samples in a JFR recording.
+The first duration is accumulated transpilation/cache lookup time. The `session`
+span also includes unrelated startup work such as world loading. A normal cold
+module uses two compiler calls; a cached module uses zero. `transpileCacheBenchmark`
+compares these paths using the real script corpus. Old reports mentioning WASM
+load time or bridge calls describe the pre-migration engine and are historical.
 
 System properties:
 
-- `-Dtsmodify.transpileCache=false` disables the disk cache; every file is transpiled through the bridge.
+- `-Dtsmodify.transpileCache=false` disables the disk cache; every file is transpiled by Translanguage.
 - `-Dtsmodify.transpileCacheDir=<path>` relocates the cache root, replacing `<game>/kubejs/tsmodify-cache/v1`.
 - `-Dtsmodify.transpileCacheMaxEntries=<n>` changes the capacity (default 4096).
 
@@ -78,7 +92,11 @@ The cache deliberately outlives `KubeJSPlugin.clearCaches()`; only the in-memory
 
 The in-memory Rhino bytecode cache described above and this transpile disk cache are independent: the former avoids recompiling JavaScript on reload, the latter avoids re-running the TypeScript-to-JavaScript pipeline.
 
-Java-side version constants that the fingerprint depends on must be bumped whenever the corresponding code changes: `TranspilePipelineFingerprint.POST_PROCESSING_VERSION` covers `typescript/syntax/*` and `TypeScriptCommonJsModuleTransformer`, and `TranspilePipelineFingerprint.SWC4J_BRIDGE_VERSION` mirrors the Rust `VERSION` constant in `wasm/swc4j-bridge/src/lib.rs` and is asserted against the loaded bridge by a unit test. The bridge version is mirrored rather than queried because asking the runtime for its version would initialize the WASM module, which is exactly the cost a cache hit is meant to avoid. Any change to the bridge crate — including a compatibility fix — must bump that version so bodies produced by the previous bridge cannot be reused.
+`TranspilePipelineFingerprint.POST_PROCESSING_VERSION` must change when host
+rewrites or their ordering change. The engine identity is generated from
+`gradle.properties` into `tsmodify/translanguage.properties`; updating the version
+or artifact checksum invalidates existing cached bodies without loading the compiler.
+The old engine's entries are not reused and will age out under the normal capacity limit.
 
 ## KubeJS Fluid Type Registration
 
@@ -90,10 +108,10 @@ The source fluid and its `pack:flowing_oil` variant return the exact same regist
 
 TS Modify keeps the original exception as the cause and adds a structured diagnostic message at each TypeScript boundary. Runtime errors now identify:
 
-- the failing phase, such as `SWC transpilation`, `TypeScript post-processing`, `script preload`, `module resolution`, or `module execution`;
+- the failing phase, such as `Translanguage transpilation`, `TypeScript post-processing`, `script preload`, `module resolution`, or `module execution`;
 - the source file and module ID when they are available;
 - the requester and module chain for nested imports;
-- the source line, column, and a short code frame when SWC or Rhino reports a location;
+- the source line, column, and a short code frame when Translanguage or Rhino reports a location;
 - the listener registration file and line for KubeJS event callback failures.
 
 Typical output has this shape:
@@ -220,10 +238,24 @@ Verified on a production Forge server (1.20.1-47.4.10) with KubeJS `2001.6.5-bui
   a dedicated server (`Attempted to load class net/minecraft/client/multiplayer/MultiPlayerGameMode
   for invalid dist DEDICATED_SERVER`), which aborts startup. TS Modify itself needs no ProbeJS and
   starts normally without it.
-## Scope
+## Scope and Build Requirements
 
-SWC handles TypeScript syntax transpilation. TS Modify does not perform type checking or bundling. Runtime KubeJS mode supports static module syntax through a CommonJS-style loader with same-domain and `shared_scripts` resolution; project mode preserves module syntax and rewrites relative `.ts`-family specifiers to their emitted JavaScript extensions.
+Translanguage handles syntax transpilation; TS Modify does not type-check or
+bundle projects. Project mode preserves module syntax, rewrites relative
+TypeScript extensions, and can request `SourceMapMode.EXTERNAL` or `INLINE` from
+the Java configuration API. External maps are written beside the output; inline
+maps stay in the code. Maps originate from the TypeScript-erasure pass and are
+not composed with later host rewrites or ES5 lowering, so they are not precise
+runtime maps for KubeJS (which disables maps by default).
 
-The mod vendors the swc4j Java API subset that TS Modify uses, but the SWC execution path no longer loads swc4j JNI libraries. The build compiles the local `wasm/swc4j-bridge` Rust crate to `wasm32-wasip1`, packages `swc4j/swc4j_bridge.wasm` as a mod resource, and calls it through the pure Java Chicory WebAssembly runtime.
+The build requires Java 17 and the local `docs/Translanguage-2.0.6.jar`, with its
+version and SHA-256 pinned in `gradle.properties`. There is no Cargo, Rust,
+WASM target, JNI, or Chicory requirement. Run `./gradlew test` and `./gradlew build`
+(or `.\gradlew.bat` on Windows). Distribute `build/libs/tsmodify-<version>-all.jar`,
+which includes the unmodified library and its license/notices via Forge Jar-in-Jar.
+The plain development JAR does not bundle the library.
 
-`compileSwc4jWasm` requires Cargo and the `wasm32-wasip1` target. `processResources` depends on that task so release jars contain the WASM module and no `libswc4j-*` platform native resources. Use `-PskipSwc4jWasm=true` only for Java-only compilation on machines without Rust; that path does not produce a runnable SWC WASM resource.
+Java integration configuration now uses Translanguage enums (`ModuleKind`,
+`JavaScriptTarget`, `SourceMapMode`, `DecoratorMode`) in place of swc4j enums.
+`ModuleKind.SCRIPT` expresses the former script-only parse mode; the redundant
+`parseMode` setting and WASM merged-call switch are removed.

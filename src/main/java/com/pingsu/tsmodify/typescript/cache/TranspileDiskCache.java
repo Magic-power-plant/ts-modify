@@ -113,7 +113,16 @@ public final class TranspileDiskCache {
         }
         try {
             Path root = resolveSharedRoot();
-            return create(root, resolveMaxEntries());
+            TranspileDiskCache cache = create(root, resolveMaxEntries());
+            // Startup probe. A miss is only actionable when the cache identity is visible: the
+            // per-file DEBUG lines carry the fingerprint, and this pins the root it applies to, so a
+            // cold start ("no entries yet") can be told apart from a stale one ("other fingerprint").
+            LOGGER.info("TS Modify transpile disk cache at {} (fingerprint {})", root,
+                    TranspilePipelineFingerprint.value());
+            if (LOGGER.isDebugEnabled()) {
+                LOGGER.debug("TS Modify transpile disk cache holds {} cached bodies", cache.entryCount());
+            }
+            return cache;
         } catch (RuntimeException e) {
             LOGGER.warn("TS Modify transpile disk cache is unavailable; continuing without it", e);
             return disabled();

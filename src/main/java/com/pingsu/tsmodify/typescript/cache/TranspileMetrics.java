@@ -1,6 +1,6 @@
 package com.pingsu.tsmodify.typescript.cache;
 
-import com.caoccao.javet.swc4j.wasm.Swc4jWasmRuntimeStats;
+import com.pingsu.tsmodify.typescript.TranslanguageCompiler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Startup diagnostics for TypeScript transpilation.
  *
  * <p>Before this existed the KubeJS script load path produced no timing data at all, so every
- * later optimization (disk cache, merged bridge round trip, AOT) was unattributable. The metrics
+ * later optimization (disk cache, compiler passes, JavaScript lowering) was unattributable. The metrics
  * accumulate per script load session and emit one INFO summary plus per-file DEBUG detail.</p>
  *
  * <p>A session ends when it is flushed: explicitly from the KubeJS plugin cache clear hook (which
@@ -24,11 +24,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class TranspileMetrics {
     /** Result of one transpilation attempt. */
     public enum Outcome {
-        /** Served from the disk cache without touching the SWC bridge. */
+        /** Served from the disk cache without touching the Translanguage compiler. */
         HIT,
-        /** Transpiled through the SWC bridge because the disk cache had no usable entry. */
+        /** Transpiled through the Translanguage compiler because the disk cache had no usable entry. */
         MISS,
-        /** Transpiled through the SWC bridge with the disk cache disabled. */
+        /** Transpiled through the Translanguage compiler with the disk cache disabled. */
         BYPASS
     }
 
@@ -43,13 +43,12 @@ public final class TranspileMetrics {
     private static long sourceBytes;
     private static long transpileNanos;
     private static long sessionStartNanos;
-    private static long bridgeCallsAtSessionStart;
-    private static long wasmLoadNanosAtSessionStart;
+    private static long compilerCallsAtSessionStart;
     private static final List<FileTiming> SLOWEST = new ArrayList<>();
 
     static {
         // A session begins when this class is initialized, so the first file is measured too.
-        // Reading Swc4jWasmRuntimeStats must not initialize Swc4jWasmRuntime.
+        // Reading the counter does not create a compilation session.
         beginSession();
     }
 
@@ -58,8 +57,7 @@ public final class TranspileMetrics {
 
     private static void beginSession() {
         sessionStartNanos = System.nanoTime();
-        bridgeCallsAtSessionStart = Swc4jWasmRuntimeStats.getInvocationCount();
-        wasmLoadNanosAtSessionStart = Swc4jWasmRuntimeStats.getLoadDurationNanos();
+        compilerCallsAtSessionStart = TranslanguageCompiler.invocationCount();
     }
 
     public static void record(String sourceName, int sourceByteCount, long durationNanos, Outcome outcome) {
@@ -113,9 +111,7 @@ public final class TranspileMetrics {
         long sessionBytes;
         long sessionTranspileNanos;
         long sessionWallNanos;
-        long bridgeCalls;
-        long wasmLoadNanos;
-        long wasmLoadAtStart;
+        long compilerCalls;
         List<FileTiming> slowest;
         synchronized (LOCK) {
             if (files == 0) {
@@ -128,32 +124,24 @@ public final class TranspileMetrics {
             sessionBytes = sourceBytes;
             sessionTranspileNanos = transpileNanos;
             sessionWallNanos = Math.max(0L, System.nanoTime() - sessionStartNanos);
-            bridgeCalls = Math.max(0L, Swc4jWasmRuntimeStats.getInvocationCount() - bridgeCallsAtSessionStart);
-            wasmLoadAtStart = wasmLoadNanosAtSessionStart;
-            wasmLoadNanos = Swc4jWasmRuntimeStats.getLoadDurationNanos();
+            compilerCalls = Math.max(0L, TranslanguageCompiler.invocationCount() - compilerCallsAtSessionStart);
             slowest = new ArrayList<>(SLOWEST);
             resetLocked();
         }
 
-        String wasmState = wasmLoadNanos <= 0
-                ? "wasm-load not needed"
-                : wasmLoadAtStart > 0
-                        ? "wasm-load reused (" + formatDuration(wasmLoadNanos) + ")"
-                        : "wasm-load " + formatDuration(wasmLoadNanos);
         // The accumulated per-attempt time is the honest cost of transpilation. The session span
         // additionally covers everything between the first transpile and the flush, which in a game
         // run includes unrelated startup work such as world and datapack loading.
         String summary = String.format(
                 Locale.ROOT,
-                "[TS Modify] transpiled %d TypeScript file(s) in %s (session %s, cache %d/%d hit, %s, "
-                        + "%d bridge call(s), %s source, trigger: %s)",
+                "[TS Modify] transpiled %d TypeScript file(s) in %s (session %s, cache %d/%d hit, Translanguage, "
+                        + "%d compiler call(s), %s source, trigger: %s)",
                 sessionFiles,
                 formatDuration(sessionTranspileNanos),
                 formatDuration(sessionWallNanos),
                 sessionHits,
                 sessionFiles,
-                wasmState,
-                bridgeCalls,
+                compilerCalls,
                 formatBytes(sessionBytes),
                 trigger);
         if (LOGGER.isDebugEnabled()) {

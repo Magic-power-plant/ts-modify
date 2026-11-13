@@ -1,6 +1,6 @@
 package com.pingsu.tsmodify.typescript.benchmark;
 
-import com.caoccao.javet.swc4j.wasm.Swc4jWasmRuntimeStats;
+import com.pingsu.tsmodify.typescript.TranslanguageCompiler;
 import com.pingsu.tsmodify.typescript.TypeScriptTranspiler;
 import com.pingsu.tsmodify.typescript.cache.TranspileDiskCache;
 import com.pingsu.tsmodify.typescript.cache.TranspileMetrics;
@@ -21,7 +21,7 @@ import java.util.stream.Stream;
  *
  * <p>This is the in-JVM evidence behind the W1 exit criteria. It is not a substitute for the planned
  * JFR run against a live Minecraft instance, but it exercises the production path: preload, disk
- * cache lookup, bridge transpilation, atomic store, and the KubeJS cache-clear reload boundary.</p>
+ * cache lookup, compiler transpilation, atomic store, and the KubeJS cache-clear reload boundary.</p>
  *
  * <p>Run through the {@code transpileCacheBenchmark} Gradle task.</p>
  */
@@ -51,12 +51,11 @@ public final class TranspileCacheBenchmarkMain {
         System.setProperty(TranspileDiskCache.DIRECTORY_PROPERTY, cacheRoot.toString());
         System.out.printf("fixtures=%d cacheRoot=%s%n", names.size(), cacheRoot);
 
-        // Warm up the JVM, the SWC bridge, and the WASM runtime before any measurement.
-        bridgePass(names, sources);
-        System.out.printf("warmup done, wasm-load %.0f ms%n",
-                Swc4jWasmRuntimeStats.getLoadDurationNanos() / 1_000_000.0D);
+        // Warm the Java compiler and host adapters before measurement.
+        compilerPass(names, sources);
+        System.out.println("warmup done, Translanguage " + TranslanguageCompiler.version());
 
-        measureBridgeBaseline(names, sources);
+        measureCompilerBaseline(names, sources);
         measureCachePass("cold", names, sources);
         measureCachePass("warm", names, sources);
         measureCachePass("warm2", names, sources);
@@ -68,14 +67,14 @@ public final class TranspileCacheBenchmarkMain {
     }
 
     /** Raw transpilation cost with no registry and no cache involved. */
-    private static void measureBridgeBaseline(List<String> names, List<String> sources) {
-        long bridgeBefore = Swc4jWasmRuntimeStats.getInvocationCount();
+    private static void measureCompilerBaseline(List<String> names, List<String> sources) {
+        long compilerBefore = TranslanguageCompiler.invocationCount();
         long start = System.nanoTime();
-        bridgePass(names, sources);
+        compilerPass(names, sources);
         long elapsed = System.nanoTime() - start;
-        System.out.printf("baseline (no cache) %.1f ms, %d bridge call(s)%n",
+        System.out.printf("baseline (no cache) %.1f ms, %d compiler call(s)%n",
                 elapsed / 1_000_000.0D,
-                Swc4jWasmRuntimeStats.getInvocationCount() - bridgeBefore);
+                TranslanguageCompiler.invocationCount() - compilerBefore);
     }
 
     /** Full production path through {@code preload}. */
@@ -83,7 +82,7 @@ public final class TranspileCacheBenchmarkMain {
         // This is the KubeJS reload boundary: the in-memory sources go away, the disk cache survives.
         TypeScriptModuleRegistry.clear();
         TranspileMetrics.reset();
-        long bridgeBefore = Swc4jWasmRuntimeStats.getInvocationCount();
+        long compilerBefore = TranslanguageCompiler.invocationCount();
         long start = System.nanoTime();
         for (int index = 0; index < names.size(); index++) {
             TypeScriptModuleRegistry.preload(
@@ -94,14 +93,14 @@ public final class TranspileCacheBenchmarkMain {
                     List.of(sources.get(index).split("\n", -1)));
         }
         long elapsed = System.nanoTime() - start;
-        System.out.printf("%-7s %.1f ms, %d bridge call(s)%n",
+        System.out.printf("%-7s %.1f ms, %d compiler call(s)%n",
                 label,
                 elapsed / 1_000_000.0D,
-                Swc4jWasmRuntimeStats.getInvocationCount() - bridgeBefore);
+                TranslanguageCompiler.invocationCount() - compilerBefore);
         System.out.println(TranspileMetrics.summarize(label));
     }
 
-    private static void bridgePass(List<String> names, List<String> sources) {
+    private static void compilerPass(List<String> names, List<String> sources) {
         for (int index = 0; index < names.size(); index++) {
             TypeScriptTranspiler.transpileKubeJsModuleBody(names.get(index), sources.get(index)).code();
         }
