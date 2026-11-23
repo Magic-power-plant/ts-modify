@@ -81,6 +81,8 @@ Cache location:
 <game>/kubejs/tsmodify-cache/v1/<first two key characters>/<key>.js
 ```
 
+On the first cache write, TS Modify creates `kubejs/tsmodify-cache/.gitignore` containing `*`, so Git ignores the entire cache contents. With `tsmodify.transpileCacheDir`, the file goes directly in the configured directory instead. Existing ignore rules are never overwritten.
+
 One file per emitted module body, UTF-8, no source map, no index file. Key identity is content addressed:
 
 - the exact transpiled source text (SHA-256), after normalising line endings and removing trailing line terminators, and

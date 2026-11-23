@@ -7,12 +7,14 @@ import java.io.IOException;
 import java.nio.charset.MalformedInputException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
@@ -39,10 +41,12 @@ final class TranspileCacheStore {
     private static final String TEMP_SUFFIX = ".tmp";
 
     private final Path root;
+    private final Path gitIgnore;
     private final int maxEntries;
 
-    TranspileCacheStore(Path root, int maxEntries) {
+    TranspileCacheStore(Path cacheDirectory, Path root, int maxEntries) {
         this.root = root.toAbsolutePath().normalize();
+        this.gitIgnore = cacheDirectory.toAbsolutePath().normalize().resolve(".gitignore");
         this.maxEntries = Math.max(1, maxEntries);
     }
 
@@ -83,6 +87,7 @@ final class TranspileCacheStore {
         Path temporary = null;
         try {
             Files.createDirectories(path.getParent());
+            ensureGitIgnore();
             temporary = Files.createTempFile(root, key.id(), TEMP_SUFFIX);
             Files.writeString(temporary, body, StandardCharsets.UTF_8);
             publish(temporary, path);
@@ -100,13 +105,25 @@ final class TranspileCacheStore {
         deleteQuietly(pathFor(key));
     }
 
+    private void ensureGitIgnore() {
+        try {
+            if (Files.notExists(gitIgnore)) {
+                Files.writeString(gitIgnore, "*\n", StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
+            }
+        } catch (FileAlreadyExistsException ignored) {
+        } catch (IOException | RuntimeException e) {
+            LOGGER.debug("Failed to create TS Modify cache ignore file {}", gitIgnore, e);
+        }
+    }
+
     void clear() {
         try {
             if (!Files.isDirectory(root)) {
                 return;
             }
             try (var paths = Files.walk(root)) {
-                paths.filter(Files::isRegularFile).forEach(TranspileCacheStore::deleteQuietly);
+                paths.filter(path -> !path.equals(gitIgnore) && Files.isRegularFile(path))
+                        .forEach(TranspileCacheStore::deleteQuietly);
             }
         } catch (IOException e) {
             LOGGER.debug("Failed to clear TS Modify transpile cache directory {}", root, e);
@@ -152,7 +169,7 @@ final class TranspileCacheStore {
             Files.walkFileTree(root, new SimpleFileVisitor<>() {
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) {
-                    if (attributes.isRegularFile() && !file.getFileName().toString().endsWith(TEMP_SUFFIX)) {
+                    if (attributes.isRegularFile() && !file.equals(gitIgnore) && !file.getFileName().toString().endsWith(TEMP_SUFFIX)) {
                         entries.add(file);
                     }
                     return FileVisitResult.CONTINUE;

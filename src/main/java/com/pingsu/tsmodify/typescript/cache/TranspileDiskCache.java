@@ -49,7 +49,12 @@ public final class TranspileDiskCache {
 
     /** Cache rooted at an explicit directory; used by tests and by the directory override. */
     public static TranspileDiskCache create(Path root, int maxEntries) {
-        return new TranspileDiskCache(new TranspileCacheStore(root, maxEntries));
+        return new TranspileDiskCache(new TranspileCacheStore(root, root, maxEntries));
+    }
+
+    static TranspileDiskCache createDefault(Path kubejsDirectory, int maxEntries) {
+        Path directory = kubejsDirectory.resolve(CACHE_DIRECTORY_NAME);
+        return new TranspileDiskCache(new TranspileCacheStore(directory, directory.resolve(CACHE_FORMAT_DIRECTORY), maxEntries));
     }
 
     /** No-op cache used when the feature is switched off. */
@@ -112,12 +117,15 @@ public final class TranspileDiskCache {
             return disabled();
         }
         try {
-            Path root = resolveSharedRoot();
-            TranspileDiskCache cache = create(root, resolveMaxEntries());
+            String override = System.getProperty(DIRECTORY_PROPERTY);
+            int maxEntries = resolveMaxEntries();
+            TranspileDiskCache cache = override == null || override.isBlank()
+                    ? createDefault(KubeJSPaths.DIRECTORY, maxEntries)
+                    : create(Path.of(override), maxEntries);
             // Startup probe. A miss is only actionable when the cache identity is visible: the
             // per-file DEBUG lines carry the fingerprint, and this pins the root it applies to, so a
             // cold start ("no entries yet") can be told apart from a stale one ("other fingerprint").
-            LOGGER.info("TS Modify transpile disk cache at {} (fingerprint {})", root,
+            LOGGER.info("TS Modify transpile disk cache at {} (fingerprint {})", cache.root(),
                     TranspilePipelineFingerprint.value());
             if (LOGGER.isDebugEnabled()) {
                 LOGGER.debug("TS Modify transpile disk cache holds {} cached bodies", cache.entryCount());
@@ -127,14 +135,6 @@ public final class TranspileDiskCache {
             LOGGER.warn("TS Modify transpile disk cache is unavailable; continuing without it", e);
             return disabled();
         }
-    }
-
-    private static Path resolveSharedRoot() {
-        String override = System.getProperty(DIRECTORY_PROPERTY);
-        if (override != null && !override.isBlank()) {
-            return Path.of(override);
-        }
-        return KubeJSPaths.DIRECTORY.resolve(CACHE_DIRECTORY_NAME).resolve(CACHE_FORMAT_DIRECTORY);
     }
 
     private static boolean isEnabledByProperty() {

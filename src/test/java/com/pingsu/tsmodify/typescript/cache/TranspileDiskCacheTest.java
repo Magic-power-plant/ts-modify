@@ -59,7 +59,7 @@ class TranspileDiskCacheTest {
         assertNotEquals(cache.keyFor("global.ts", SOURCE_BYTES).id(), otherPipeline.id());
         assertFalse(Files.exists(entryPath(cache, otherPipeline)));
 
-        TranspileCacheStore store = new TranspileCacheStore(cache.root(), 16);
+        TranspileCacheStore store = new TranspileCacheStore(cache.root().getParent(), cache.root(), 16);
         assertTrue(store.read(otherPipeline).isEmpty());
     }
 
@@ -207,10 +207,13 @@ class TranspileDiskCacheTest {
     }
 
     @Test
-    void usesTheDocumentedShardedLayout() {
+    void usesTheDocumentedShardedLayout() throws IOException {
         TranspileDiskCache cache = newCache(16);
+        Path directory = tempDir.resolve("kubejs").resolve(TranspileDiskCache.CACHE_DIRECTORY_NAME);
+        assertFalse(Files.exists(directory));
         cache.store("global.ts", SOURCE_BYTES, BODY);
 
+        assertEquals("*\n", Files.readString(directory.resolve(".gitignore")));
         TranspileCacheKey key = cache.keyFor("global.ts", SOURCE_BYTES);
         assertEquals(64, key.id().length());
         assertEquals(key.id().substring(0, 2), key.shard());
@@ -221,15 +224,30 @@ class TranspileDiskCacheTest {
                         .resolve(key.shard()).resolve(key.fileName())));
     }
 
+    @Test
+    void keepsIgnoreRulesInsideAnExplicitRootAcrossWritesEvictionAndClear() throws IOException {
+        Path directory = tempDir.resolve("custom-cache");
+        TranspileDiskCache cache = TranspileDiskCache.create(directory, 1);
+        Path gitIgnore = directory.resolve(".gitignore");
+        cache.store("first.ts", bytes("first"), BODY);
+        assertEquals("*\n", Files.readString(gitIgnore));
+        assertFalse(Files.exists(tempDir.resolve(".gitignore")));
+        Files.writeString(gitIgnore, "custom-rule\n");
+
+        cache.store("second.ts", bytes("second"), BODY);
+        assertEquals(1L, cache.entryCount());
+        assertEquals("custom-rule\n", Files.readString(gitIgnore));
+        cache.clear();
+        assertEquals(0L, cache.entryCount());
+        assertEquals("custom-rule\n", Files.readString(gitIgnore));
+    }
+
     private Path entryPath(TranspileDiskCache cache, TranspileCacheKey key) {
         return cache.root().resolve(key.shard()).resolve(key.fileName());
     }
 
     private TranspileDiskCache newCache(int maxEntries) {
-        return TranspileDiskCache.create(
-                tempDir.resolve("kubejs").resolve(TranspileDiskCache.CACHE_DIRECTORY_NAME)
-                        .resolve(TranspileDiskCache.CACHE_FORMAT_DIRECTORY),
-                maxEntries);
+        return TranspileDiskCache.createDefault(tempDir.resolve("kubejs"), maxEntries);
     }
 
     private static byte[] bytes(String value) {
